@@ -1,0 +1,15 @@
+name = "kudokudo"
+main = "src/index.ts"
+compatibility_date = "2025-12-25"
+
+routes = [{ pattern = "kudokudo.waga.me", custom_domain = true }]
+workers_dev = false
+preview_urls = false
+
+[observability]
+enabled = true
+
+[vars]
+# S3-compatible endpoint (e.g., Cloudflare R2)
+# Example: "https://<account_id>.r2.cloudflarestorage.com"
+S3_ENDPOINT = "https://7116748e83acc204c3a6df8b20aa5619.r2.cloudflarestorage.com"

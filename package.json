@@ -6,8 +6,11 @@
 		"deploy": "wrangler deploy",
 		"dev": "wrangler dev",
 		"start": "wrangler dev",
-		"test": "vitest",
-		"cf-typegen": "wrangler types"
+		"test": "vitest run",
+		"rotate-client-key": "./scripts/rotate-client-key.sh"
+	},
+	"dependencies": {
+		"aws4fetch": "^1.0.20"
 	},
 	"devDependencies": {
 		"@cloudflare/vitest-pool-workers": "^0.8.19",
