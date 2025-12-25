@@ -50,25 +50,6 @@ export default {
 		// Parse the request URL to get the path and query string
 		const url = new URL(request.url);
 
-		// Check for unsupported query parameters and reject early
-		// This avoids unnecessary upstream requests that will fail
-		const unsupportedQueryParams = new Set([
-			'ownershipcontrols',  // GetBucketOwnershipControls not implemented in R2
-			'versioning',         // Bucket versioning may not be supported
-		]);
-
-		for (const param of url.searchParams.keys()) {
-			if (unsupportedQueryParams.has(param.toLowerCase())) {
-				return new Response(
-					`<?xml version="1.0" encoding="UTF-8"?><Error><Code>NotImplemented</Code><Message>The requested operation is not supported by this proxy</Message></Error>`,
-					{
-						status: 501,
-						headers: { 'Content-Type': 'application/xml' }
-					}
-				);
-			}
-		}
-
 		const upstreamUrl = new URL(url.pathname + url.search, env.S3_ENDPOINT);
 
 		// Create a new request for the upstream, copying only S3-specific headers
@@ -139,6 +120,7 @@ export default {
 		const aws = new AwsClient({
 			accessKeyId: env.UPSTREAM_ACCESS_KEY_ID,
 			secretAccessKey: env.UPSTREAM_SECRET_ACCESS_KEY,
+			retries: 0
 		});
 
 		// Sign and send the request to upstream
