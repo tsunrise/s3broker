@@ -50,7 +50,25 @@ export default {
 		// Parse the request URL to get the path and query string
 		const url = new URL(request.url);
 
-		const upstreamUrl = new URL(url.pathname + url.search, env.S3_ENDPOINT);
+		// For upstream, we need to strip presigned URL parameters (we'll re-sign with header auth)
+		const upstreamUrl = new URL(url.pathname, env.S3_ENDPOINT);
+
+		// Copy query parameters, excluding presigned URL auth params
+		const presignedParams = new Set([
+			'X-Amz-Algorithm',
+			'X-Amz-Credential',
+			'X-Amz-Date',
+			'X-Amz-Expires',
+			'X-Amz-SignedHeaders',
+			'X-Amz-Signature',
+			'X-Amz-Security-Token',
+		]);
+
+		for (const [key, value] of url.searchParams.entries()) {
+			if (!presignedParams.has(key)) {
+				upstreamUrl.searchParams.set(key, value);
+			}
+		}
 
 		// Create a new request for the upstream, copying only S3-specific headers
 		// Use an allowlist approach to be robust against new Cloudflare headers

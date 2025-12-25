@@ -85,7 +85,7 @@ describe('S3 Proxy Worker', () => {
 	it('returns 500 if environment is not configured', async () => {
 		const request = new IncomingRequest('https://example.com/bucket/key');
 		const ctx = createExecutionContext();
-		const response = await worker.fetch(request, env, ctx);
+		const response = await worker.fetch(request, {} as Env, ctx);
 		await waitOnExecutionContext(ctx);
 
 		expect(response.status).toBe(500);

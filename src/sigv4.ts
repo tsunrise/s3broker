@@ -16,6 +16,58 @@ interface SigV4Params {
     };
     signedHeaders: string[];
     signature: string;
+    // Presigned URL specific
+    expires?: number;
+    isPresigned?: boolean;
+}
+
+/**
+ * Check if request uses presigned URL authentication
+ */
+export function isPresignedUrl(request: Request): boolean {
+    const url = new URL(request.url);
+    return url.searchParams.has('X-Amz-Signature');
+}
+
+/**
+ * Parse presigned URL query parameters
+ * Query params: X-Amz-Algorithm, X-Amz-Credential, X-Amz-Date, X-Amz-Expires, X-Amz-SignedHeaders, X-Amz-Signature
+ */
+export function parsePresignedUrl(request: Request): SigV4Params {
+    const url = new URL(request.url);
+
+    const algorithm = url.searchParams.get('X-Amz-Algorithm');
+    const credential = url.searchParams.get('X-Amz-Credential');
+    const signedHeaders = url.searchParams.get('X-Amz-SignedHeaders');
+    const signature = url.searchParams.get('X-Amz-Signature');
+    const expires = url.searchParams.get('X-Amz-Expires');
+
+    if (!algorithm || algorithm !== 'AWS4-HMAC-SHA256') {
+        throw new Error('Invalid or missing X-Amz-Algorithm');
+    }
+    if (!credential || !signedHeaders || !signature) {
+        throw new Error('Missing required presigned URL parameters');
+    }
+
+    // Parse credential: accessKeyId/date/region/service/aws4_request
+    const credentialParts = credential.split('/');
+    if (credentialParts.length !== 5 || credentialParts[4] !== 'aws4_request') {
+        throw new Error('Invalid credential format in presigned URL');
+    }
+
+    return {
+        algorithm: 'AWS4-HMAC-SHA256',
+        credential: {
+            accessKeyId: credentialParts[0],
+            date: credentialParts[1],
+            region: credentialParts[2],
+            service: credentialParts[3],
+        },
+        signedHeaders: signedHeaders.split(';'),
+        signature: signature,
+        expires: expires ? parseInt(expires, 10) : undefined,
+        isPresigned: true,
+    };
 }
 
 /**
@@ -56,17 +108,21 @@ export function parseAuthorizationHeader(authHeader: string): SigV4Params {
         },
         signedHeaders: params.SignedHeaders.split(';'),
         signature: params.Signature,
+        isPresigned: false,
     };
 }
 
 /**
  * Build the canonical request from the incoming request
  * https://docs.aws.amazon.com/general/latest/gr/sigv4-create-canonical-request.html
+ * 
+ * @param isPresigned - If true, exclude X-Amz-Signature from query string
  */
 export async function buildCanonicalRequest(
     request: Request,
     signedHeaders: string[],
-    payloadHash: string
+    payloadHash: string,
+    isPresigned: boolean = false
 ): Promise<string> {
     const url = new URL(request.url);
     const method = request.method;
@@ -74,8 +130,9 @@ export async function buildCanonicalRequest(
     // Canonical URI (path)
     const canonicalUri = url.pathname || '/';
 
-    // Canonical query string (sorted)
+    // Canonical query string (sorted, exclude X-Amz-Signature for presigned URLs)
     const queryParams = Array.from(url.searchParams.entries())
+        .filter(([key]) => !isPresigned || key !== 'X-Amz-Signature')
         .sort(([a], [b]) => a.localeCompare(b))
         .map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(value)}`)
         .join('&');
@@ -183,19 +240,27 @@ export async function calculateSignature(
 
 /**
  * Verify the signature of an incoming request
+ * Supports both Authorization header and presigned URL authentication
  */
 export async function verifySignature(
     request: Request,
     clientSecretKey: string,
     expectedAccessKeyId: string
-): Promise<{ valid: boolean; error?: string }> {
+): Promise<{ valid: boolean; error?: string; isPresigned?: boolean }> {
     try {
+        const url = new URL(request.url);
         const authHeader = request.headers.get('Authorization');
-        if (!authHeader) {
-            return { valid: false, error: 'Missing Authorization header' };
-        }
+        const isPresigned = url.searchParams.has('X-Amz-Signature');
 
-        const params = parseAuthorizationHeader(authHeader);
+        // Parse auth params from either header or query parameters
+        let params: SigV4Params;
+        if (isPresigned) {
+            params = parsePresignedUrl(request);
+        } else if (authHeader) {
+            params = parseAuthorizationHeader(authHeader);
+        } else {
+            return { valid: false, error: 'Missing authentication (no Authorization header or presigned URL parameters)' };
+        }
 
         // Verify access key ID matches
         if (params.credential.accessKeyId !== expectedAccessKeyId) {
@@ -203,8 +268,34 @@ export async function verifySignature(
             return { valid: false, error: 'Access key ID mismatch' };
         }
 
+        // For presigned URLs, check expiration
+        if (isPresigned && params.expires !== undefined) {
+            const requestDate = url.searchParams.get('X-Amz-Date');
+            if (requestDate) {
+                // Parse the request date (format: 20231224T120000Z)
+                const year = parseInt(requestDate.substring(0, 4));
+                const month = parseInt(requestDate.substring(4, 6)) - 1;
+                const day = parseInt(requestDate.substring(6, 8));
+                const hour = parseInt(requestDate.substring(9, 11));
+                const minute = parseInt(requestDate.substring(11, 13));
+                const second = parseInt(requestDate.substring(13, 15));
+                const signedAt = new Date(Date.UTC(year, month, day, hour, minute, second));
+                const expiresAt = new Date(signedAt.getTime() + params.expires * 1000);
+
+                if (new Date() > expiresAt) {
+                    return { valid: false, error: 'Presigned URL has expired' };
+                }
+            }
+        }
+
         // Get the payload hash
-        const payloadHash = request.headers.get('x-amz-content-sha256') || 'UNSIGNED-PAYLOAD';
+        let payloadHash: string;
+        if (isPresigned) {
+            // Presigned URLs always use UNSIGNED-PAYLOAD
+            payloadHash = 'UNSIGNED-PAYLOAD';
+        } else {
+            payloadHash = request.headers.get('x-amz-content-sha256') || 'UNSIGNED-PAYLOAD';
+        }
 
         // Check for streaming payload (not supported)
         if (payloadHash === 'STREAMING-AWS4-HMAC-SHA256-PAYLOAD') {
@@ -215,13 +306,20 @@ export async function verifySignature(
         const canonicalRequest = await buildCanonicalRequest(
             request,
             params.signedHeaders,
-            payloadHash
+            payloadHash,
+            isPresigned
         );
 
-        // Get request date from x-amz-date header
-        const requestDate = request.headers.get('x-amz-date');
+        // Get request date
+        let requestDate: string | null;
+        if (isPresigned) {
+            requestDate = url.searchParams.get('X-Amz-Date');
+        } else {
+            requestDate = request.headers.get('x-amz-date');
+        }
+
         if (!requestDate) {
-            return { valid: false, error: 'Missing x-amz-date header' };
+            return { valid: false, error: 'Missing request date (x-amz-date)' };
         }
 
         // Create credential scope
@@ -248,10 +346,10 @@ export async function verifySignature(
 
         // Compare signatures (constant-time comparison would be better for production)
         if (expectedSignature !== params.signature) {
-            return { valid: false, error: 'Signature mismatch' };
+            return { valid: false, error: 'Signature mismatch', isPresigned };
         }
 
-        return { valid: true };
+        return { valid: true, isPresigned };
     } catch (error) {
         return { valid: false, error: error instanceof Error ? error.message : 'Unknown error' };
     }
