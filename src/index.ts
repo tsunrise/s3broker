@@ -124,12 +124,17 @@ export default {
 		// Sign and send the request to upstream
 		try {
 			const response = await aws.fetch(upstreamRequest);
+
 			if (!response.ok) {
-				console.log(`Upstream request failed: ${response.statusText}, response: ${await response.text()}`);
-				return new Response(`Upstream request failed: ${response.statusText}`, { status: response.status });
+				// Clone the response so we can read the body for logging
+				// while still returning the original response to the client
+				const responseClone = response.clone();
+				const errorBody = await responseClone.text();
+				console.log(`Upstream request failed: ${response.status} ${response.statusText}, response: ${errorBody}`);
 			}
 
-			// Return the upstream response to the client
+			// Always return the upstream response to the client (including errors)
+			// This properly handles the response body and avoids stalled response warnings
 			return new Response(response.body, {
 				status: response.status,
 				statusText: response.statusText,
