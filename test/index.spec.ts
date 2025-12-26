@@ -214,10 +214,134 @@ describe('S3 Proxy Worker', () => {
 		const response = await worker.fetch(signedRequest, testEnv, ctx);
 		await waitOnExecutionContext(ctx);
 
-		// Deactivate mock
-		fetchMock.deactivate();
-
 		expect(response.status).toBe(200);
 		expect(await response.text()).toBe('mock object content');
+
+		// Deactivate mock
+		fetchMock.deactivate();
+	});
+});
+
+describe('Guardrails - NoDeleteOld', () => {
+	const testEnv: Env = {
+		CLIENT_ACCESS_KEY_ID: 'AKIAIOSFODNN7EXAMPLE',
+		CLIENT_SECRET_ACCESS_KEY: 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY',
+		UPSTREAM_ACCESS_KEY_ID: 'AKIOUPSTREAM12345678',
+		UPSTREAM_SECRET_ACCESS_KEY: 'upstreamSecretKey1234567890abcdefghijklmn',
+		S3_ENDPOINT: 'https://test.r2.cloudflarestorage.com',
+	};
+
+	/**
+	 * Helper to create a signed DELETE request
+	 */
+	async function createSignedDeleteRequest(path: string, currentDate: string, currentAmzDate: string): Promise<Request<unknown, IncomingRequestCfProperties>> {
+		const { deriveSigningKey, calculateSignature, buildCanonicalRequest, createStringToSign } = await import('../src/sigv4');
+
+		const region = 'us-east-1';
+		const service = 's3';
+		const signedHeaders = ['host', 'x-amz-content-sha256', 'x-amz-date'];
+		const payloadHash = 'UNSIGNED-PAYLOAD';
+		const requestUrl = `https://example.com${path}`;
+
+		const unsignedRequest = new IncomingRequest(requestUrl, {
+			method: 'DELETE',
+			headers: {
+				'host': 'example.com',
+				'x-amz-content-sha256': payloadHash,
+				'x-amz-date': currentAmzDate,
+			},
+		});
+
+		const canonicalRequest = await buildCanonicalRequest(unsignedRequest, signedHeaders, payloadHash, false);
+		const credentialScope = `${currentDate}/${region}/${service}/aws4_request`;
+		const stringToSign = await createStringToSign('AWS4-HMAC-SHA256', currentAmzDate, credentialScope, canonicalRequest);
+		const signingKey = await deriveSigningKey(testEnv.CLIENT_SECRET_ACCESS_KEY, currentDate, region, service);
+		const signature = await calculateSignature(signingKey, stringToSign);
+
+		return new IncomingRequest(requestUrl, {
+			method: 'DELETE',
+			headers: {
+				'Authorization': `AWS4-HMAC-SHA256 Credential=${testEnv.CLIENT_ACCESS_KEY_ID}/${currentDate}/${region}/${service}/aws4_request, SignedHeaders=${signedHeaders.join(';')}, Signature=${signature}`,
+				'host': 'example.com',
+				'x-amz-content-sha256': payloadHash,
+				'x-amz-date': currentAmzDate,
+			},
+		});
+	}
+
+	it('blocks deletion of objects older than threshold', async () => {
+		const { fetchMock } = await import('cloudflare:test');
+		const { S3Mock } = await import('./s3mock');
+
+		// Current time for the test
+		const now = Date.now();
+		const currentDate = new Date(now).toISOString().slice(0, 10).replace(/-/g, '');
+		const currentAmzDate = new Date(now).toISOString().replace(/[-:]/g, '').slice(0, 15) + '00Z';
+
+		// Create S3 mock with an object created 120 seconds ago (older than 60s threshold)
+		const s3Mock = new S3Mock(testEnv.S3_ENDPOINT);
+		const objectCreatedAt = now - 120 * 1000; // 120 seconds ago
+		s3Mock.putObject('/bucket/old-object', 'old content', new Headers(), {
+			currentTimestampMs: objectCreatedAt
+		});
+
+		// Activate fetch mocking and attach S3 mock
+		fetchMock.activate();
+		s3Mock.attachToMock(fetchMock);
+
+		// Create signed DELETE request
+		const signedRequest = await createSignedDeleteRequest('/bucket/old-object', currentDate, currentAmzDate);
+
+		const ctx = createExecutionContext();
+		const response = await worker.fetch(signedRequest, testEnv, ctx);
+		await waitOnExecutionContext(ctx);
+
+		fetchMock.deactivate();
+
+		// Should be blocked by guardrail (403 Forbidden)
+		expect(response.status).toBe(403);
+		const text = await response.text();
+		expect(text).toContain('noDeleteOld');
+		expect(text).toContain('exceeds');
+	});
+
+	it('allows deletion of recently created objects', async () => {
+		const { fetchMock } = await import('cloudflare:test');
+		const { S3Mock } = await import('./s3mock');
+
+		// Current time for the test
+		const now = Date.now();
+		const currentDate = new Date(now).toISOString().slice(0, 10).replace(/-/g, '');
+		const currentAmzDate = new Date(now).toISOString().replace(/[-:]/g, '').slice(0, 15) + '00Z';
+
+		// Use a unique endpoint to avoid mock conflicts with other tests
+		const uniqueEndpoint = 'https://test2.r2.cloudflarestorage.com';
+		const testEnvWithUniqueEndpoint: Env = {
+			...testEnv,
+			S3_ENDPOINT: uniqueEndpoint,
+		};
+
+		// Create S3 mock with an object created 30 seconds ago (within 60s threshold)
+		const s3Mock = new S3Mock(uniqueEndpoint);
+		const objectCreatedAt = now - 30 * 1000; // 30 seconds ago
+		s3Mock.putObject('/bucket/new-object', 'new content', new Headers(), {
+			currentTimestampMs: objectCreatedAt
+		});
+
+		// Activate fetch mocking and attach S3 mock
+		fetchMock.activate();
+		s3Mock.attachToMock(fetchMock);
+
+		// Create signed DELETE request (reuse helper but with unique env for signing)
+		const signedRequest = await createSignedDeleteRequest('/bucket/new-object', currentDate, currentAmzDate);
+
+		const ctx = createExecutionContext();
+		const response = await worker.fetch(signedRequest, testEnvWithUniqueEndpoint, ctx);
+		await waitOnExecutionContext(ctx);
+
+		fetchMock.deactivate();
+
+		// Should be allowed (204 No Content from upstream mock)
+		expect(response.status).toBe(204);
 	});
 });

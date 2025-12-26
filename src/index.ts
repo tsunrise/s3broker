@@ -16,9 +16,10 @@ import { AwsClient } from 'aws4fetch';
 import { verifySignature as verifyS3RequestSignature } from './sigv4';
 import type { Env } from './env';
 import { textErrorResponse, ErrorCode } from './utils';
+import { evaluateGuardrails } from './guardrails/guardrails';
 
 export default {
-	async fetch(request, env, _ctx): Promise<Response> {
+	async fetch(request, env, ctx): Promise<Response> {
 		// Verify required environment variables
 		if (!env.CLIENT_ACCESS_KEY_ID || !env.CLIENT_SECRET_ACCESS_KEY) {
 			return new Response('Server configuration error: missing client credentials', { status: 500 });
@@ -42,8 +43,21 @@ export default {
 			return textErrorResponse(`Signature verification failed: ${verificationResult.error}`, ErrorCode.Forbidden);
 		}
 
+
 		// Parse the request URL to get the path and query string
 		const url = new URL(request.url);
+
+		// Evaluate guardrails
+		const guardrailUpstreamClient = new AwsClient({
+			accessKeyId: env.UPSTREAM_ACCESS_KEY_ID,
+			secretAccessKey: env.UPSTREAM_SECRET_ACCESS_KEY,
+			retries: 5
+		});
+		const guardrailViolation = await evaluateGuardrails(request, guardrailUpstreamClient, env, Date.now());
+		if (guardrailViolation) {
+			console.log(`Guardrail violation`, { path: url.pathname, method: request.method, query: url.search, policy: guardrailViolation.policy, violation: guardrailViolation.violation });
+			return textErrorResponse(`Request violating guardrail policy ${guardrailViolation.policy}: ${guardrailViolation.violation}`, ErrorCode.Forbidden);
+		}
 
 		// For upstream, we need to strip presigned URL parameters (we'll re-sign with header auth)
 		const upstreamUrl = new URL(url.pathname, env.S3_ENDPOINT);
@@ -130,7 +144,7 @@ export default {
 		});
 
 		// Initialize AWS client with upstream credentials (Key B)
-		const aws = new AwsClient({
+		const proxyUpstreamAws = new AwsClient({
 			accessKeyId: env.UPSTREAM_ACCESS_KEY_ID,
 			secretAccessKey: env.UPSTREAM_SECRET_ACCESS_KEY,
 			retries: 0
@@ -138,7 +152,7 @@ export default {
 
 		// Sign and send the request to upstream
 		try {
-			return await aws.fetch(upstreamRequest);
+			return await proxyUpstreamAws.fetch(upstreamRequest);
 		} catch (error) {
 			console.error('Upstream request failed:', error);
 			return textErrorResponse(

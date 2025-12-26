@@ -10,7 +10,8 @@
 		"rotate-client-key": "./scripts/rotate-client-key.sh"
 	},
 	"dependencies": {
-		"aws4fetch": "^1.0.20"
+		"aws4fetch": "^1.0.20",
+		"zod": "^4.2.1"
 	},
 	"devDependencies": {
 		"@cloudflare/vitest-pool-workers": "^0.8.19",
