@@ -1,7 +1,7 @@
-import { env, createExecutionContext, waitOnExecutionContext, SELF } from 'cloudflare:test';
-import { describe, it, expect, beforeEach } from 'vitest';
+import { createExecutionContext, waitOnExecutionContext } from 'cloudflare:test';
+import { describe, it, expect } from 'vitest';
 import worker from '../src/index';
-import { parseAuthorizationHeader, verifySignature } from '../src/sigv4';
+import { parseAuthorizationHeader, verifySignature } from 's3broker/src/sigv4';
 import type { Env } from '../src/env';
 
 // For now, you'll need to do something like this to get a correctly-typed
@@ -11,7 +11,8 @@ const IncomingRequest = Request<unknown, IncomingRequestCfProperties>;
 describe('SigV4 Utilities', () => {
 	describe('parseAuthorizationHeader', () => {
 		it('parses valid AWS4-HMAC-SHA256 header', () => {
-			const header = 'AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/20231224/us-east-1/s3/aws4_request, SignedHeaders=host;x-amz-date, Signature=abc123';
+			const header =
+				'AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/20231224/us-east-1/s3/aws4_request, SignedHeaders=host;x-amz-date, Signature=abc123';
 			const result = parseAuthorizationHeader(header);
 
 			expect(result.algorithm).toBe('AWS4-HMAC-SHA256');
@@ -44,7 +45,7 @@ describe('SigV4 Utilities', () => {
 		it('rejects streaming payload signatures', async () => {
 			const request = new IncomingRequest('https://example.com/bucket/key', {
 				headers: {
-					'Authorization': 'AWS4-HMAC-SHA256 Credential=AKID/20251226/us-east-1/s3/aws4_request, SignedHeaders=host, Signature=abc',
+					Authorization: 'AWS4-HMAC-SHA256 Credential=AKID/20251226/us-east-1/s3/aws4_request, SignedHeaders=host, Signature=abc',
 					'x-amz-content-sha256': 'STREAMING-AWS4-HMAC-SHA256-PAYLOAD',
 					'x-amz-date': '20251226T001100Z',
 				},
@@ -58,10 +59,10 @@ describe('SigV4 Utilities', () => {
 		it('rejects mismatched access key ID', async () => {
 			const request = new IncomingRequest('https://example.com/bucket/key', {
 				headers: {
-					'Authorization': 'AWS4-HMAC-SHA256 Credential=WRONGKEY/20231224/us-east-1/s3/aws4_request, SignedHeaders=host, Signature=abc',
+					Authorization: 'AWS4-HMAC-SHA256 Credential=WRONGKEY/20231224/us-east-1/s3/aws4_request, SignedHeaders=host, Signature=abc',
 					'x-amz-content-sha256': 'UNSIGNED-PAYLOAD',
 					'x-amz-date': '20231224T120000Z',
-					'host': 'example.com',
+					host: 'example.com',
 				},
 			});
 			const result = await verifySignature(request, 'secret', 'AKID', Date.UTC(2023, 11, 24, 12, 2, 0));
@@ -73,10 +74,10 @@ describe('SigV4 Utilities', () => {
 		it('rejects requests with stale timestamps (>5 min)', async () => {
 			const request = new IncomingRequest('https://example.com/bucket/key', {
 				headers: {
-					'Authorization': 'AWS4-HMAC-SHA256 Credential=AKID/20231224/us-east-1/s3/aws4_request, SignedHeaders=host, Signature=abc',
+					Authorization: 'AWS4-HMAC-SHA256 Credential=AKID/20231224/us-east-1/s3/aws4_request, SignedHeaders=host, Signature=abc',
 					'x-amz-content-sha256': 'UNSIGNED-PAYLOAD',
 					'x-amz-date': '20231224T120000Z',
-					'host': 'example.com',
+					host: 'example.com',
 				},
 			});
 			// Current time is 6 minutes after the request date
@@ -123,10 +124,11 @@ describe('S3 Proxy Worker', () => {
 	it('returns 403 if signature is invalid', async () => {
 		const request = new IncomingRequest('https://example.com/bucket/key', {
 			headers: {
-				'Authorization': 'AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/20231224/us-east-1/s3/aws4_request, SignedHeaders=host, Signature=invalidsignature',
+				Authorization:
+					'AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/20231224/us-east-1/s3/aws4_request, SignedHeaders=host, Signature=invalidsignature',
 				'x-amz-content-sha256': 'UNSIGNED-PAYLOAD',
 				'x-amz-date': '20231224T120000Z',
-				'host': 'example.com',
+				host: 'example.com',
 			},
 		});
 		const ctx = createExecutionContext();
@@ -144,10 +146,10 @@ describe('S3 Proxy Worker', () => {
 
 		const request = new IncomingRequest('https://example.com/bucket/key', {
 			headers: {
-				'Authorization': `AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/${dateStamp}/us-east-1/s3/aws4_request, SignedHeaders=host, Signature=abc`,
+				Authorization: `AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/${dateStamp}/us-east-1/s3/aws4_request, SignedHeaders=host, Signature=abc`,
 				'x-amz-content-sha256': 'STREAMING-AWS4-HMAC-SHA256-PAYLOAD',
 				'x-amz-date': amzDate,
-				'host': 'example.com',
+				host: 'example.com',
 			},
 		});
 		const ctx = createExecutionContext();
@@ -161,7 +163,7 @@ describe('S3 Proxy Worker', () => {
 	it('proxies valid requests to upstream successfully', async () => {
 		// Import fetchMock from cloudflare:test and signature utilities
 		const { fetchMock } = await import('cloudflare:test');
-		const { deriveSigningKey, calculateSignature, buildCanonicalRequest, createStringToSign } = await import('../src/sigv4');
+		const { deriveSigningKey, calculateSignature, buildCanonicalRequest, createStringToSign } = await import('s3broker/src/sigv4');
 
 		// Enable mocking and set up mock response
 		fetchMock.activate();
@@ -169,7 +171,7 @@ describe('S3 Proxy Worker', () => {
 			.get('https://test.r2.cloudflarestorage.com')
 			.intercept({ path: '/bucket/test-key', method: 'GET' })
 			.reply(200, 'mock object content', {
-				headers: { 'Content-Type': 'text/plain' }
+				headers: { 'Content-Type': 'text/plain' },
 			});
 
 		// Generate a properly signed request with current timestamp (to pass staleness check)
@@ -186,7 +188,7 @@ describe('S3 Proxy Worker', () => {
 		const unsignedRequest = new IncomingRequest(requestUrl, {
 			method: 'GET',
 			headers: {
-				'host': 'example.com',
+				host: 'example.com',
 				'x-amz-content-sha256': payloadHash,
 				'x-amz-date': currentAmzDate,
 			},
@@ -203,8 +205,8 @@ describe('S3 Proxy Worker', () => {
 		const signedRequest = new IncomingRequest(requestUrl, {
 			method: 'GET',
 			headers: {
-				'Authorization': `AWS4-HMAC-SHA256 Credential=${testEnv.CLIENT_ACCESS_KEY_ID}/${currentDate}/${region}/${service}/aws4_request, SignedHeaders=${signedHeaders.join(';')}, Signature=${signature}`,
-				'host': 'example.com',
+				Authorization: `AWS4-HMAC-SHA256 Credential=${testEnv.CLIENT_ACCESS_KEY_ID}/${currentDate}/${region}/${service}/aws4_request, SignedHeaders=${signedHeaders.join(';')}, Signature=${signature}`,
+				host: 'example.com',
 				'x-amz-content-sha256': payloadHash,
 				'x-amz-date': currentAmzDate,
 			},
@@ -234,8 +236,12 @@ describe('Guardrails - NoDeleteOld', () => {
 	/**
 	 * Helper to create a signed DELETE request
 	 */
-	async function createSignedDeleteRequest(path: string, currentDate: string, currentAmzDate: string): Promise<Request<unknown, IncomingRequestCfProperties>> {
-		const { deriveSigningKey, calculateSignature, buildCanonicalRequest, createStringToSign } = await import('../src/sigv4');
+	async function createSignedDeleteRequest(
+		path: string,
+		currentDate: string,
+		currentAmzDate: string,
+	): Promise<Request<unknown, IncomingRequestCfProperties>> {
+		const { deriveSigningKey, calculateSignature, buildCanonicalRequest, createStringToSign } = await import('s3broker/src/sigv4');
 
 		const region = 'us-east-1';
 		const service = 's3';
@@ -246,7 +252,7 @@ describe('Guardrails - NoDeleteOld', () => {
 		const unsignedRequest = new IncomingRequest(requestUrl, {
 			method: 'DELETE',
 			headers: {
-				'host': 'example.com',
+				host: 'example.com',
 				'x-amz-content-sha256': payloadHash,
 				'x-amz-date': currentAmzDate,
 			},
@@ -261,8 +267,8 @@ describe('Guardrails - NoDeleteOld', () => {
 		return new IncomingRequest(requestUrl, {
 			method: 'DELETE',
 			headers: {
-				'Authorization': `AWS4-HMAC-SHA256 Credential=${testEnv.CLIENT_ACCESS_KEY_ID}/${currentDate}/${region}/${service}/aws4_request, SignedHeaders=${signedHeaders.join(';')}, Signature=${signature}`,
-				'host': 'example.com',
+				Authorization: `AWS4-HMAC-SHA256 Credential=${testEnv.CLIENT_ACCESS_KEY_ID}/${currentDate}/${region}/${service}/aws4_request, SignedHeaders=${signedHeaders.join(';')}, Signature=${signature}`,
+				host: 'example.com',
 				'x-amz-content-sha256': payloadHash,
 				'x-amz-date': currentAmzDate,
 			},
@@ -282,7 +288,7 @@ describe('Guardrails - NoDeleteOld', () => {
 		const s3Mock = new S3Mock(testEnv.S3_ENDPOINT);
 		const objectCreatedAt = now - 120 * 1000; // 120 seconds ago
 		s3Mock.putObject('/bucket/old-object', 'old content', new Headers(), {
-			currentTimestampMs: objectCreatedAt
+			currentTimestampMs: objectCreatedAt,
 		});
 
 		// Activate fetch mocking and attach S3 mock
@@ -325,7 +331,7 @@ describe('Guardrails - NoDeleteOld', () => {
 		const s3Mock = new S3Mock(uniqueEndpoint);
 		const objectCreatedAt = now - 30 * 1000; // 30 seconds ago
 		s3Mock.putObject('/bucket/new-object', 'new content', new Headers(), {
-			currentTimestampMs: objectCreatedAt
+			currentTimestampMs: objectCreatedAt,
 		});
 
 		// Activate fetch mocking and attach S3 mock

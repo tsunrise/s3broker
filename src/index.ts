@@ -1,25 +1,16 @@
 /**
- * S3 Proxy Worker with SigV4 Re-signing and Guardrails
- * 
- * ==========              ==========             ============
- * ||Client|| -- Key A --> ||Worker|| -- Key B --> ||Upstream||
- * ==========              ==========             ============
- * 
- * This worker acts as a transparent S3 proxy that:
- * 1. Verifies incoming requests signed with Key A (client credentials)
- * 2. Ensure the operation follows guardrails policy
- * 3. Re-signs requests with Key B (upstream credentials) for Cloudflare R2
- * 4. Proxies the request to the upstream S3-compatible endpoint
+ * S3 Proxy Worker - Uses s3broker library
+ *
+ * This worker is a thin wrapper that uses the S3Broker library to handle
+ * all S3 proxy functionality including signature verification, guardrails,
+ * and request proxying.
  */
 
-import { AwsClient } from 'aws4fetch';
-import { verifySignature as verifyS3RequestSignature } from './sigv4';
+import { handle } from 's3broker';
 import type { Env } from './env';
-import { textErrorResponse, ErrorCode } from './utils';
-import { evaluateGuardrails } from './guardrails/guardrails';
 
 export default {
-	async fetch(request, env, ctx): Promise<Response> {
+	async fetch(request, env, _ctx): Promise<Response> {
 		// Verify required environment variables
 		if (!env.CLIENT_ACCESS_KEY_ID || !env.CLIENT_SECRET_ACCESS_KEY) {
 			return new Response('Server configuration error: missing client credentials', { status: 500 });
@@ -31,134 +22,13 @@ export default {
 			return new Response('Server configuration error: missing S3_ENDPOINT', { status: 500 });
 		}
 
-		// Verify the incoming request signature (Client Key)
-		const verificationResult = await verifyS3RequestSignature(
-			request,
-			env.CLIENT_SECRET_ACCESS_KEY,
-			env.CLIENT_ACCESS_KEY_ID,
-			Date.now()
-		);
-
-		if (!verificationResult.valid) {
-			return textErrorResponse(`Signature verification failed: ${verificationResult.error}`, ErrorCode.Forbidden);
-		}
-
-
-		// Parse the request URL to get the path and query string
-		const url = new URL(request.url);
-
-		// Evaluate guardrails
-		const guardrailUpstreamClient = new AwsClient({
-			accessKeyId: env.UPSTREAM_ACCESS_KEY_ID,
-			secretAccessKey: env.UPSTREAM_SECRET_ACCESS_KEY,
-			retries: 5
+		// Delegate to S3Broker library
+		return handle(request, {
+			s3Endpoint: env.S3_ENDPOINT,
+			clientAccessKeyId: env.CLIENT_ACCESS_KEY_ID,
+			clientSecretAccessKey: env.CLIENT_SECRET_ACCESS_KEY,
+			upstreamAccessKeyId: env.UPSTREAM_ACCESS_KEY_ID,
+			upstreamSecretAccessKey: env.UPSTREAM_SECRET_ACCESS_KEY,
 		});
-		const guardrailViolation = await evaluateGuardrails(request, guardrailUpstreamClient, env, Date.now());
-		if (guardrailViolation) {
-			console.log(`Guardrail violation`, { path: url.pathname, method: request.method, query: url.search, policy: guardrailViolation.policy, violation: guardrailViolation.violation });
-			return textErrorResponse(`Request violating guardrail policy ${guardrailViolation.policy}: ${guardrailViolation.violation}`, ErrorCode.Forbidden);
-		}
-
-		// For upstream, we need to strip presigned URL parameters (we'll re-sign with header auth)
-		const upstreamUrl = new URL(url.pathname, env.S3_ENDPOINT);
-
-		// Copy query parameters, excluding presigned URL auth params
-		const presignedParams = new Set([
-			'X-Amz-Algorithm',
-			'X-Amz-Credential',
-			'X-Amz-Date',
-			'X-Amz-Expires',
-			'X-Amz-SignedHeaders',
-			'X-Amz-Signature',
-			'X-Amz-Security-Token',
-		]);
-
-		for (const [key, value] of url.searchParams.entries()) {
-			if (!presignedParams.has(key)) {
-				upstreamUrl.searchParams.set(key, value);
-			}
-		}
-
-		// Create a new request for the upstream, copying only S3-specific headers
-		// Use an allowlist approach to be robust against new Cloudflare headers
-		const upstreamHeaders = new Headers();
-		const headersToInclude = new Set([
-			// S3-specific headers
-			'x-amz-date',
-			'x-amz-content-sha256',
-			'x-amz-security-token',  // For temporary credentials
-			'x-amz-server-side-encryption',
-			'x-amz-server-side-encryption-aws-kms-key-id',
-			'x-amz-server-side-encryption-customer-algorithm',
-			'x-amz-server-side-encryption-customer-key',
-			'x-amz-server-side-encryption-customer-key-md5',
-			'x-amz-storage-class',
-			'x-amz-tagging',
-			'x-amz-website-redirect-location',
-			'x-amz-acl',
-			'x-amz-grant-read',
-			'x-amz-grant-write',
-			'x-amz-grant-read-acp',
-			'x-amz-grant-write-acp',
-			'x-amz-grant-full-control',
-			'x-amz-metadata-directive',
-			'x-amz-copy-source',
-			'x-amz-copy-source-if-match',
-			'x-amz-copy-source-if-none-match',
-			'x-amz-copy-source-if-unmodified-since',
-			'x-amz-copy-source-if-modified-since',
-			'x-amz-copy-source-range',
-			// Standard HTTP headers that S3 uses
-			'content-type',
-			'content-length',
-			'content-md5',
-			'content-encoding',
-			'content-disposition',
-			'cache-control',
-			'expires',
-			'range',
-			'if-match',
-			'if-none-match',
-			'if-modified-since',
-			'if-unmodified-since',
-			// User agent for debugging
-			'user-agent',
-		]);
-
-		for (const [key, value] of request.headers.entries()) {
-			if (headersToInclude.has(key.toLowerCase())) {
-				upstreamHeaders.set(key, value);
-			}
-		}
-
-		// Force UNSIGNED-PAYLOAD for the upstream request
-		upstreamHeaders.set('x-amz-content-sha256', 'UNSIGNED-PAYLOAD');
-
-		// Create the upstream request
-		const upstreamRequest = new Request(upstreamUrl.toString(), {
-			method: request.method,
-			headers: upstreamHeaders,
-			body: request.body,
-			// @ts-ignore - duplex is needed for streaming bodies
-			duplex: 'half',
-		});
-
-		// Initialize AWS client with upstream credentials (Key B)
-		const proxyUpstreamAws = new AwsClient({
-			accessKeyId: env.UPSTREAM_ACCESS_KEY_ID,
-			secretAccessKey: env.UPSTREAM_SECRET_ACCESS_KEY,
-			retries: 0
-		});
-
-		// Sign and send the request to upstream
-		try {
-			return await proxyUpstreamAws.fetch(upstreamRequest);
-		} catch (error) {
-			console.error('Upstream request failed:', error);
-			return textErrorResponse(
-				`Upstream request failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
-				ErrorCode.UpstreamFailure
-			);
-		}
 	},
 } satisfies ExportedHandler<Env>;
