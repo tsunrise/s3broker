@@ -1,0 +1,27 @@
+{
+	"name": "s3broker",
+	"version": "0.0.1",
+	"description": "S3 proxy library with SigV4 verification and configurable guardrails policies",
+	"main": "src/index.ts",
+	"types": "src/index.ts",
+	"scripts": {
+		"typecheck": "tsc --noEmit"
+	},
+	"keywords": [
+		"s3",
+		"proxy",
+		"sigv4",
+		"aws",
+		"guardrails",
+		"security"
+	],
+	"license": "MIT",
+	"dependencies": {
+		"aws4fetch": "^1.0.20",
+		"zod": "^4.2.1"
+	},
+	"devDependencies": {
+		"typescript": "^5.5.2"
+	},
+	"author": "Tom Shen"
+}

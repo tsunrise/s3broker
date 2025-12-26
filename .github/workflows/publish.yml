@@ -1,0 +1,72 @@
+name: Publish s3broker to npm
+
+on:
+  push:
+    tags:
+      - '[0-9]+.[0-9]+.[0-9]+' # Matches semver tags like 0.1.0, 1.0.0, etc.
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run (do not actually publish)'
+        required: false
+        default: false
+        type: boolean
+
+# Required permissions for npm trusted publishing (OIDC) and GitHub releases
+permissions:
+  contents: write # Required for creating GitHub releases
+  id-token: write # Required for OIDC token generation
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    # Only run on main branch for tagged commits
+    if: github.ref_type == 'tag' && (github.event.base_ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch')
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+      - name: Type check library
+        run: npm run typecheck
+        working-directory: packages/s3broker
+
+      - name: Verify version matches tag
+        run: |
+          PACKAGE_VERSION=$(node -p "require('./packages/s3broker/package.json').version")
+          TAG_VERSION="${GITHUB_REF#refs/tags/}"
+          if [ "$PACKAGE_VERSION" != "$TAG_VERSION" ]; then
+            echo "❌ Version mismatch: package.json has $PACKAGE_VERSION but tag is $TAG_VERSION"
+            exit 1
+          fi
+          echo "✅ Version verified: $PACKAGE_VERSION"
+
+      - name: Create GitHub Release
+        if: ${{ !inputs.dry_run }}
+        uses: softprops/action-gh-release@v2
+        with:
+          name: s3broker v${{ github.ref_name }}
+          generate_release_notes: true
+          make_latest: true
+
+      - name: Publish to npm (with provenance)
+        if: ${{ !inputs.dry_run }}
+        run: npm publish --access public
+        working-directory: packages/s3broker
+        # No NPM_TOKEN needed! npm CLI auto-detects OIDC and uses trusted publishing
+
+      - name: Publish to npm (dry run)
+        if: ${{ inputs.dry_run }}
+        run: npm publish --access public --dry-run
+        working-directory: packages/s3broker

@@ -1,0 +1,10 @@
+{
+	"noDeleteOld": [
+		{
+			"pattern": "/.*",
+			"config": {
+				"noDeleteBeforeSeconds": 60
+			}
+		}
+	]
+}
