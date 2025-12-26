@@ -35,7 +35,7 @@ describe('SigV4 Utilities', () => {
 	describe('verifySignature', () => {
 		it('rejects request with missing Authorization header', async () => {
 			const request = new IncomingRequest('https://example.com/bucket/key');
-			const result = await verifySignature(request, 'secret', 'AKID');
+			const result = await verifySignature(request, 'secret', 'AKID', Date.now());
 
 			expect(result.valid).toBe(false);
 			expect(result.error).toContain('Authorization');
@@ -44,12 +44,12 @@ describe('SigV4 Utilities', () => {
 		it('rejects streaming payload signatures', async () => {
 			const request = new IncomingRequest('https://example.com/bucket/key', {
 				headers: {
-					'Authorization': 'AWS4-HMAC-SHA256 Credential=AKID/20231224/us-east-1/s3/aws4_request, SignedHeaders=host, Signature=abc',
+					'Authorization': 'AWS4-HMAC-SHA256 Credential=AKID/20251226/us-east-1/s3/aws4_request, SignedHeaders=host, Signature=abc',
 					'x-amz-content-sha256': 'STREAMING-AWS4-HMAC-SHA256-PAYLOAD',
-					'x-amz-date': '20231224T120000Z',
+					'x-amz-date': '20251226T001100Z',
 				},
 			});
-			const result = await verifySignature(request, 'secret', 'AKID');
+			const result = await verifySignature(request, 'secret', 'AKID', Date.UTC(2025, 11, 26, 0, 12, 0));
 
 			expect(result.valid).toBe(false);
 			expect(result.error).toContain('Streaming payload');
@@ -64,10 +64,28 @@ describe('SigV4 Utilities', () => {
 					'host': 'example.com',
 				},
 			});
-			const result = await verifySignature(request, 'secret', 'AKID');
+			const result = await verifySignature(request, 'secret', 'AKID', Date.UTC(2023, 11, 24, 12, 2, 0));
 
 			expect(result.valid).toBe(false);
 			expect(result.error).toContain('Access key ID');
+		});
+
+		it('rejects requests with stale timestamps (>5 min)', async () => {
+			const request = new IncomingRequest('https://example.com/bucket/key', {
+				headers: {
+					'Authorization': 'AWS4-HMAC-SHA256 Credential=AKID/20231224/us-east-1/s3/aws4_request, SignedHeaders=host, Signature=abc',
+					'x-amz-content-sha256': 'UNSIGNED-PAYLOAD',
+					'x-amz-date': '20231224T120000Z',
+					'host': 'example.com',
+				},
+			});
+			// Current time is 6 minutes after the request date
+			// Request: 2023-12-24 12:00:00 UTC, Current: 2023-12-24 12:06:00 UTC
+			const currentTime = Date.UTC(2023, 11, 24, 12, 6, 0);
+			const result = await verifySignature(request, 'secret', 'AKID', currentTime);
+
+			expect(result.valid).toBe(false);
+			expect(result.error).toContain('Request date too old');
 		});
 	});
 });
@@ -119,11 +137,16 @@ describe('S3 Proxy Worker', () => {
 	});
 
 	it('rejects streaming payload signatures', async () => {
+		// Use current date to pass staleness check
+		const now = new Date();
+		const dateStamp = now.toISOString().slice(0, 10).replace(/-/g, '');
+		const amzDate = now.toISOString().replace(/[-:]/g, '').slice(0, 15) + '00Z';
+
 		const request = new IncomingRequest('https://example.com/bucket/key', {
 			headers: {
-				'Authorization': 'AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/20231224/us-east-1/s3/aws4_request, SignedHeaders=host, Signature=abc',
+				'Authorization': `AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/${dateStamp}/us-east-1/s3/aws4_request, SignedHeaders=host, Signature=abc`,
 				'x-amz-content-sha256': 'STREAMING-AWS4-HMAC-SHA256-PAYLOAD',
-				'x-amz-date': '20231224T120000Z',
+				'x-amz-date': amzDate,
 				'host': 'example.com',
 			},
 		});
@@ -133,5 +156,68 @@ describe('S3 Proxy Worker', () => {
 
 		expect(response.status).toBe(403);
 		expect(await response.text()).toContain('Streaming payload');
+	});
+
+	it('proxies valid requests to upstream successfully', async () => {
+		// Import fetchMock from cloudflare:test and signature utilities
+		const { fetchMock } = await import('cloudflare:test');
+		const { deriveSigningKey, calculateSignature, buildCanonicalRequest, createStringToSign } = await import('../src/sigv4');
+
+		// Enable mocking and set up mock response
+		fetchMock.activate();
+		fetchMock
+			.get('https://test.r2.cloudflarestorage.com')
+			.intercept({ path: '/bucket/test-key', method: 'GET' })
+			.reply(200, 'mock object content', {
+				headers: { 'Content-Type': 'text/plain' }
+			});
+
+		// Generate a properly signed request with current timestamp (to pass staleness check)
+		const now = new Date();
+		const currentDate = now.toISOString().slice(0, 10).replace(/-/g, '');
+		const currentAmzDate = now.toISOString().replace(/[-:]/g, '').slice(0, 15) + '00Z';
+		const region = 'us-east-1';
+		const service = 's3';
+		const signedHeaders = ['host', 'x-amz-content-sha256', 'x-amz-date'];
+		const payloadHash = 'UNSIGNED-PAYLOAD';
+		const requestUrl = 'https://example.com/bucket/test-key';
+
+		// Create unsigned request to build canonical request
+		const unsignedRequest = new IncomingRequest(requestUrl, {
+			method: 'GET',
+			headers: {
+				'host': 'example.com',
+				'x-amz-content-sha256': payloadHash,
+				'x-amz-date': currentAmzDate,
+			},
+		});
+
+		// Build canonical request and derive signature
+		const canonicalRequest = await buildCanonicalRequest(unsignedRequest, signedHeaders, payloadHash, false);
+		const credentialScope = `${currentDate}/${region}/${service}/aws4_request`;
+		const stringToSign = await createStringToSign('AWS4-HMAC-SHA256', currentAmzDate, credentialScope, canonicalRequest);
+		const signingKey = await deriveSigningKey(testEnv.CLIENT_SECRET_ACCESS_KEY, currentDate, region, service);
+		const signature = await calculateSignature(signingKey, stringToSign);
+
+		// Create the properly signed request
+		const signedRequest = new IncomingRequest(requestUrl, {
+			method: 'GET',
+			headers: {
+				'Authorization': `AWS4-HMAC-SHA256 Credential=${testEnv.CLIENT_ACCESS_KEY_ID}/${currentDate}/${region}/${service}/aws4_request, SignedHeaders=${signedHeaders.join(';')}, Signature=${signature}`,
+				'host': 'example.com',
+				'x-amz-content-sha256': payloadHash,
+				'x-amz-date': currentAmzDate,
+			},
+		});
+
+		const ctx = createExecutionContext();
+		const response = await worker.fetch(signedRequest, testEnv, ctx);
+		await waitOnExecutionContext(ctx);
+
+		// Deactivate mock
+		fetchMock.deactivate();
+
+		expect(response.status).toBe(200);
+		expect(await response.text()).toBe('mock object content');
 	});
 });

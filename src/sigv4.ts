@@ -114,24 +114,24 @@ export function parseAuthorizationHeader(authHeader: string): SigV4Params {
 
 /**
  * Build the canonical request from the incoming request
- * https://docs.aws.amazon.com/general/latest/gr/sigv4-create-canonical-request.html
+ * https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_sigv-create-signed-request.html
  * 
  * @param isPresigned - If true, exclude X-Amz-Signature from query string
  */
 export async function buildCanonicalRequest(
     request: Request,
     signedHeaders: string[],
-    payloadHash: string,
+    hashedPayload: string,
     isPresigned: boolean = false
 ): Promise<string> {
     const url = new URL(request.url);
-    const method = request.method;
+    const httpMethod = request.method;
 
     // Canonical URI (path)
     const canonicalUri = url.pathname || '/';
 
     // Canonical query string (sorted, exclude X-Amz-Signature for presigned URLs)
-    const queryParams = Array.from(url.searchParams.entries())
+    const canonicalQueryString = Array.from(url.searchParams.entries())
         .filter(([key]) => !isPresigned || key !== 'X-Amz-Signature')
         .sort(([a], [b]) => a.localeCompare(b))
         .map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(value)}`)
@@ -150,16 +150,16 @@ export async function buildCanonicalRequest(
         .map(name => `${name.toLowerCase()}:${headers[name.toLowerCase()] || ''}\n`)
         .join('');
 
-    const signedHeadersList = signedHeaders.map(h => h.toLowerCase()).join(';');
+    const canonicalSignedHeaders = signedHeaders.map(h => h.toLowerCase()).join(';');
 
     // Combine into canonical request
     return [
-        method,
+        httpMethod,
         canonicalUri,
-        queryParams,
+        canonicalQueryString,
         canonicalHeaders,
-        signedHeadersList,
-        payloadHash,
+        canonicalSignedHeaders,
+        hashedPayload,
     ].join('\n');
 }
 
@@ -192,7 +192,7 @@ export async function createStringToSign(
 
 /**
  * Derive the signing key
- * https://docs.aws.amazon.com/general/latest/gr/sigv4-calculate-signature.html
+ * https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_sigv-create-signed-request.html
  */
 export async function deriveSigningKey(
     secretKey: string,
@@ -239,13 +239,45 @@ export async function calculateSignature(
 }
 
 /**
+ * Constant-time string comparison using crypto.subtle.timingSafeEqual
+ * Prevents timing attacks on signature comparison
+ */
+async function constantTimeCompare(a: string, b: string): Promise<boolean> {
+    if (a.length !== b.length) return false;
+
+    const encoder = new TextEncoder();
+    const aBytes = encoder.encode(a);
+    const bBytes = encoder.encode(b);
+
+    try {
+        return await crypto.subtle.timingSafeEqual(aBytes, bBytes);
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * Parse AWS date format (YYYYMMDDTHHMMSSZ) to timestamp (ms)
+ */
+function parseAmzDate(dateStr: string): number {
+    const year = parseInt(dateStr.substring(0, 4));
+    const month = parseInt(dateStr.substring(4, 6)) - 1;
+    const day = parseInt(dateStr.substring(6, 8));
+    const hour = parseInt(dateStr.substring(9, 11));
+    const minute = parseInt(dateStr.substring(11, 13));
+    const second = parseInt(dateStr.substring(13, 15));
+    return Date.UTC(year, month, day, hour, minute, second);
+}
+
+/**
  * Verify the signature of an incoming request
  * Supports both Authorization header and presigned URL authentication
  */
 export async function verifySignature(
     request: Request,
     clientSecretKey: string,
-    expectedAccessKeyId: string
+    expectedAccessKeyId: string,
+    currentTimestampMs: number
 ): Promise<{ valid: boolean; error?: string; isPresigned?: boolean }> {
     try {
         const url = new URL(request.url);
@@ -264,27 +296,38 @@ export async function verifySignature(
 
         // Verify access key ID matches
         if (params.credential.accessKeyId !== expectedAccessKeyId) {
-            console.log(`Access key ID mismatch: expected ${expectedAccessKeyId}, got ${params.credential.accessKeyId}`);
             return { valid: false, error: 'Access key ID mismatch' };
         }
 
-        // For presigned URLs, check expiration
-        if (isPresigned && params.expires !== undefined) {
-            const requestDate = url.searchParams.get('X-Amz-Date');
-            if (requestDate) {
-                // Parse the request date (format: 20231224T120000Z)
-                const year = parseInt(requestDate.substring(0, 4));
-                const month = parseInt(requestDate.substring(4, 6)) - 1;
-                const day = parseInt(requestDate.substring(6, 8));
-                const hour = parseInt(requestDate.substring(9, 11));
-                const minute = parseInt(requestDate.substring(11, 13));
-                const second = parseInt(requestDate.substring(13, 15));
-                const signedAt = new Date(Date.UTC(year, month, day, hour, minute, second));
-                const expiresAt = new Date(signedAt.getTime() + params.expires * 1000);
+        // Get request date early for both staleness and expiration checks
+        let requestDate: string | null;
+        if (isPresigned) {
+            requestDate = url.searchParams.get('X-Amz-Date');
+        } else {
+            requestDate = request.headers.get('x-amz-date');
+        }
 
-                if (new Date() > expiresAt) {
-                    return { valid: false, error: 'Presigned URL has expired' };
-                }
+        if (!requestDate) {
+            return { valid: false, error: 'Missing request date (x-amz-date)' };
+        }
+
+        // Check request date staleness to prevent replay attacks
+        // For presigned URLs, expiration is checked separately below
+        if (!isPresigned) {
+            const requestDateMs = parseAmzDate(requestDate);
+            const MAX_CLOCK_SKEW_MS = 5 * 60 * 1000; // 5 minutes
+
+            if (Math.abs(currentTimestampMs - requestDateMs) > MAX_CLOCK_SKEW_MS) {
+                return { valid: false, error: 'Request date too old or in future (max 5 min clock skew)' };
+            }
+        }
+        // For presigned URLs, check expiration
+        else if (isPresigned && params.expires !== undefined) {
+            const requestDateMs = parseAmzDate(requestDate);
+            const expiresAt = requestDateMs + params.expires * 1000;
+
+            if (currentTimestampMs > expiresAt) {
+                return { valid: false, error: 'Presigned URL has expired' };
             }
         }
 
@@ -310,18 +353,6 @@ export async function verifySignature(
             isPresigned
         );
 
-        // Get request date
-        let requestDate: string | null;
-        if (isPresigned) {
-            requestDate = url.searchParams.get('X-Amz-Date');
-        } else {
-            requestDate = request.headers.get('x-amz-date');
-        }
-
-        if (!requestDate) {
-            return { valid: false, error: 'Missing request date (x-amz-date)' };
-        }
-
         // Create credential scope
         const credentialScope = `${params.credential.date}/${params.credential.region}/${params.credential.service}/aws4_request`;
 
@@ -344,10 +375,18 @@ export async function verifySignature(
         // Calculate expected signature
         const expectedSignature = await calculateSignature(signingKey, stringToSign);
 
-        // Compare signatures (constant-time comparison would be better for production)
-        if (expectedSignature !== params.signature) {
+        // Compare signatures using constant-time comparison to prevent timing attacks
+        const signatureValid = await constantTimeCompare(expectedSignature, params.signature);
+
+        if (!signatureValid) {
             return { valid: false, error: 'Signature mismatch', isPresigned };
         }
+
+        // SECURITY NOTE: We do not validate the 'host' header against an expected value.
+        // If you need to restrict which domains can use these credentials, consider adding:
+        // - An environment variable for expected host(s)
+        // - Validation that request.headers.get('host') matches the expected value
+        // This would prevent credentials from being used on different worker domains.
 
         return { valid: true, isPresigned };
     } catch (error) {

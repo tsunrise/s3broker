@@ -1,15 +1,21 @@
 /**
- * S3 Proxy Worker with SigV4 Re-signing
+ * S3 Proxy Worker with SigV4 Re-signing and Guardrails
+ * 
+ * ==========              ==========             ============
+ * ||Client|| -- Key A --> ||Worker|| -- Key B --> ||Upstream||
+ * ==========              ==========             ============
  * 
  * This worker acts as a transparent S3 proxy that:
  * 1. Verifies incoming requests signed with Key A (client credentials)
- * 2. Re-signs requests with Key B (upstream credentials) for Cloudflare R2
- * 3. Proxies the request to the upstream S3-compatible endpoint
+ * 2. Ensure the operation follows guardrails policy
+ * 3. Re-signs requests with Key B (upstream credentials) for Cloudflare R2
+ * 4. Proxies the request to the upstream S3-compatible endpoint
  */
 
 import { AwsClient } from 'aws4fetch';
-import { verifySignature } from './sigv4';
+import { verifySignature as verifyS3RequestSignature } from './sigv4';
 import type { Env } from './env';
+import { textErrorResponse, ErrorCode } from './utils';
 
 export default {
 	async fetch(request, env, _ctx): Promise<Response> {
@@ -24,27 +30,16 @@ export default {
 			return new Response('Server configuration error: missing S3_ENDPOINT', { status: 500 });
 		}
 
-		// Log all headers for debugging
-		const headerObj: Record<string, string> = {};
-		request.headers.forEach((value, key) => {
-			headerObj[key] = value;
-		});
-
 		// Verify the incoming request signature (Client Key)
-		const verificationResult = await verifySignature(
+		const verificationResult = await verifyS3RequestSignature(
 			request,
 			env.CLIENT_SECRET_ACCESS_KEY,
-			env.CLIENT_ACCESS_KEY_ID
+			env.CLIENT_ACCESS_KEY_ID,
+			Date.now()
 		);
 
 		if (!verificationResult.valid) {
-			return new Response(
-				`Signature verification failed: ${verificationResult.error}`,
-				{
-					status: 403,
-					headers: { 'Content-Type': 'text/plain' }
-				}
-			);
+			return textErrorResponse(`Signature verification failed: ${verificationResult.error}`, ErrorCode.Forbidden);
 		}
 
 		// Parse the request URL to get the path and query string
@@ -143,28 +138,12 @@ export default {
 
 		// Sign and send the request to upstream
 		try {
-			const response = await aws.fetch(upstreamRequest);
-
-			if (!response.ok) {
-				// Clone the response so we can read the body for logging
-				// while still returning the original response to the client
-				const responseClone = response.clone();
-				const errorBody = await responseClone.text();
-				console.log(`Upstream request failed: ${response.status} ${response.statusText}, response: ${errorBody}`);
-			}
-
-			// Always return the upstream response to the client (including errors)
-			// This properly handles the response body and avoids stalled response warnings
-			return new Response(response.body, {
-				status: response.status,
-				statusText: response.statusText,
-				headers: response.headers,
-			});
+			return await aws.fetch(upstreamRequest);
 		} catch (error) {
 			console.error('Upstream request failed:', error);
-			return new Response(
+			return textErrorResponse(
 				`Upstream request failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
-				{ status: 502 }
+				ErrorCode.UpstreamFailure
 			);
 		}
 	},
