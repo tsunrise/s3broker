@@ -5,22 +5,24 @@
 
 A Cloudflare Workers library for building S3 proxies with guardrails.
 
+This is a work in progress. More guardrails and features would be added soon.
+
 ## Overview
 
-S3Broker is a TypeScript library for building proxies and guardrails for S3-compatible storage. It sits between your S3 clients and your S3-compatible storage, providing dual-key authentication and policy-based guardrails:
+S3Broker is a TypeScript library for building proxies and guardrails for S3-compatible storage. The library is intended to be used on Cloudflare Workers.
+
+When you have an S3 secret key with read/write access, any client using that key can perform destructive operations. Your data is vulnerable to:
+
+- **Accidental deletion** by users or misconfigured tools
+- **Ransomware attacks** that encrypt or delete your files
+
+S3Broker acts as a protective layer between your clients and the upstream S3 endpoint. Instead of giving clients direct access to your upstream key (Key B), you give them a different key (Key A). S3Broker validates every request against configurable guardrails and blocks dangerous operations before they reach your storage.
 
 ```
 ==========              ============             ============
 ||Client|| -- Key A --> ||S3Broker|| -- Key B --> ||Upstream||
 ==========              ============             ============
 ```
-
-**Key Features:**
-
-- **Two-Key Authentication**: Clients authenticate with Key A; S3Broker re-signs requests with Key B for the upstream
-- **Guardrails Framework**: Configurable policies to protect your data (e.g., prevent deletion of recently created objects)
-- **Full S3 Compatibility**: Works with any S3 client (AWS SDK, s3cmd, rclone, etc.)
-- **Cloudflare Workers**: Built for Cloudflare Workers runtime
 
 ## Installation
 
