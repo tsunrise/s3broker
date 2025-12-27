@@ -3,7 +3,7 @@
 [![npm version](https://img.shields.io/npm/v/s3broker.svg)](https://www.npmjs.com/package/s3broker)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-An S3-compatible proxy library with SigV4 signature verification and configurable guardrails policies.
+Proxy and guardrails for S3-compatible storage.
 
 ## Overview
 
