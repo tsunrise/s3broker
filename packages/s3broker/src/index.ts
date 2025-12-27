@@ -1,14 +1,11 @@
 /**
- * S3Broker - S3 Proxy Library with SigV4 Verification and Guardrails
+ * S3Broker - S3 Proxy Library for Cloudflare Workers
  *
  * ==========              ===========             ============
  * ||Client|| -- Key A --> ||S3Broker|| -- Key B --> ||Upstream||
  * ==========              ===========             ============
  *
- * S3Broker is a library for building secure S3-compatible proxies. It can be used in:
- * - Cloudflare Workers
- * - Any other serverless platforms (Vercel, Netlify, etc.)
- * - Any JavaScript/TypeScript runtime with fetch API support
+ * S3Broker is a Cloudflare Workers library for building secure S3-compatible proxies.
  *
  * Features:
  * 1. Verifies incoming requests signed with Key A (client credentials)

@@ -3,7 +3,7 @@
 [![npm version](https://img.shields.io/npm/v/s3broker.svg)](https://www.npmjs.com/package/s3broker)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-Proxy and guardrails for S3-compatible storage.
+A Cloudflare Workers library for building S3 proxies with guardrails.
 
 ## Overview
 
@@ -20,7 +20,7 @@ S3Broker is a TypeScript library for building proxies and guardrails for S3-comp
 - **Two-Key Authentication**: Clients authenticate with Key A; S3Broker re-signs requests with Key B for the upstream
 - **Guardrails Framework**: Configurable policies to protect your data (e.g., prevent deletion of recently created objects)
 - **Full S3 Compatibility**: Works with any S3 client (AWS SDK, s3cmd, rclone, etc.)
-- **Platform Agnostic**: Works in Cloudflare Workers, Vercel, Netlify, AWS Lambda, or any JavaScript runtime with Fetch API
+- **Cloudflare Workers**: Built for Cloudflare Workers runtime
 
 ## Installation
 

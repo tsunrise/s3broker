@@ -66,7 +66,7 @@ fs.writeFileSync(path, JSON.stringify(pkg, null, '\t') + '\n');
 # Commit the version bump
 echo -e "${YELLOW}📝 Committing version bump...${NC}"
 git add packages/s3broker/package.json
-git commit -m "chore: bump s3broker version to ${NEW_VERSION}"
+git commit -m "release ${NEW_VERSION}"
 
 # Create tag
 TAG_NAME="${NEW_VERSION}"
