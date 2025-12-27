@@ -3,7 +3,7 @@
 [![npm version](https://img.shields.io/npm/v/s3broker.svg)](https://www.npmjs.com/package/s3broker)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-Proxy and guardrails for S3-compatible storage.
+A Cloudflare Workers library for building S3 proxies with guardrails.
 
 This is a work in progress. More guardrails and features would be added soon.
 
@@ -22,7 +22,7 @@ S3Broker is a TypeScript library for building proxies and guardrails for S3-comp
 - **Two-Key Authentication**: Clients authenticate with Key A; S3Broker re-signs requests with Key B for the upstream
 - **Guardrails Framework**: Configurable policies to protect your data (e.g., prevent deletion of recently created objects).
 - **Full S3 Compatibility**: Works with any S3 client (AWS SDK, s3cmd, rclone, etc.)
-- **Platform Agnostic**: Works in Cloudflare Workers, Vercel, Netlify, AWS Lambda, or any JavaScript runtime with Fetch API
+- **Cloudflare Workers**: Built for Cloudflare Workers runtime
 
 ## Installation
 
@@ -31,8 +31,6 @@ npm install s3broker
 ```
 
 ## Quick Start
-
-We show a basic example of how to use S3Broker in a Cloudflare Worker. Those examples should also work in other JavaScript runtimes with Fetch API support.
 
 ### Basic Usage (With Default Guardrails)
 
@@ -100,6 +98,13 @@ The repo is structured as a monorepo with the following packages:
   ```
 
   In production, you should install `s3broker` from npm instead.
+
+### Releasing
+
+1. Run `./scripts/release.sh` (bumps version, creates tag, pushes). Merge the release PR.
+2. Go to GitHub → Releases → "Draft a new release"
+3. Select your tag (e.g., 0.1.0) → Publish release
+4. Workflow triggers automatically and publishes to npm
 
 ## License
 
