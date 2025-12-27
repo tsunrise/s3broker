@@ -4,13 +4,15 @@
 # This script:
 # 1. Checkouts main branch
 # 2. Creates a release/<version> branch
-# 3. Increments the s3broker minor version
+# 3. Increments the s3broker version (patch by default, minor with --minor, major with --major)
 # 4. Commits the version bump
 # 5. Tags the commit with the version
 # 6. Pushes to remote
 #
 # Usage:
-#   ./scripts/release.sh
+#   ./scripts/release.sh           # Patch version bump (0.1.0 -> 0.1.1)
+#   ./scripts/release.sh --minor   # Minor version bump (0.1.0 -> 0.2.0)
+#   ./scripts/release.sh --major   # Major version bump (0.1.0 -> 1.0.0)
 
 set -e
 
@@ -20,7 +22,27 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
-echo -e "${GREEN}🚀 Starting s3broker release process...${NC}"
+# Parse arguments
+BUMP_TYPE="patch"
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --minor)
+            BUMP_TYPE="minor"
+            shift
+            ;;
+        --major)
+            BUMP_TYPE="major"
+            shift
+            ;;
+        *)
+            echo -e "${RED}❌ Unknown option: $1${NC}"
+            echo "Usage: ./scripts/release.sh [--minor|--major]"
+            exit 1
+            ;;
+    esac
+done
+
+echo -e "${GREEN}🚀 Starting s3broker release process (${BUMP_TYPE} bump)...${NC}"
 
 # Ensure we're in the repo root
 cd "$(dirname "$0")/.."
@@ -43,9 +65,21 @@ echo -e "${YELLOW}📦 Current version: ${CURRENT_VERSION}${NC}"
 # Parse version components
 IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT_VERSION"
 
-# Increment minor version
-NEW_MINOR=$((MINOR + 1))
-NEW_VERSION="${MAJOR}.${NEW_MINOR}.0"
+# Calculate new version based on bump type
+case $BUMP_TYPE in
+    patch)
+        NEW_PATCH=$((PATCH + 1))
+        NEW_VERSION="${MAJOR}.${MINOR}.${NEW_PATCH}"
+        ;;
+    minor)
+        NEW_MINOR=$((MINOR + 1))
+        NEW_VERSION="${MAJOR}.${NEW_MINOR}.0"
+        ;;
+    major)
+        NEW_MAJOR=$((MAJOR + 1))
+        NEW_VERSION="${NEW_MAJOR}.0.0"
+        ;;
+esac
 
 echo -e "${GREEN}📦 New version: ${NEW_VERSION}${NC}"
 
