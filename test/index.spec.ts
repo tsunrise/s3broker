@@ -1,7 +1,7 @@
 import { createExecutionContext, waitOnExecutionContext } from 'cloudflare:test';
 import { describe, it, expect } from 'vitest';
 import worker from '../src/index';
-import { parseAuthorizationHeader, verifySignature } from 's3broker/src/sigv4';
+import { parseAuthorizationHeader, verifySignature } from 's3broker/sigv4';
 import type { Env } from '../src/env';
 
 // For now, you'll need to do something like this to get a correctly-typed
@@ -163,7 +163,7 @@ describe('S3 Proxy Worker', () => {
 	it('proxies valid requests to upstream successfully', async () => {
 		// Import fetchMock from cloudflare:test and signature utilities
 		const { fetchMock } = await import('cloudflare:test');
-		const { deriveSigningKey, calculateSignature, buildCanonicalRequest, createStringToSign } = await import('s3broker/src/sigv4');
+		const { deriveSigningKey, calculateSignature, buildCanonicalRequest, createStringToSign } = await import('s3broker/sigv4');
 
 		// Enable mocking and set up mock response
 		fetchMock.activate();
@@ -241,7 +241,7 @@ describe('Guardrails - NoDeleteOld', () => {
 		currentDate: string,
 		currentAmzDate: string,
 	): Promise<Request<unknown, IncomingRequestCfProperties>> {
-		const { deriveSigningKey, calculateSignature, buildCanonicalRequest, createStringToSign } = await import('s3broker/src/sigv4');
+		const { deriveSigningKey, calculateSignature, buildCanonicalRequest, createStringToSign } = await import('s3broker/sigv4');
 
 		const region = 'us-east-1';
 		const service = 's3';

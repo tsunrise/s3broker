@@ -37,6 +37,14 @@ export default tseslint.config(
 	},
 	{
 		// Ignore generated files, config files, and node_modules
-		ignores: ['**/node_modules/**', '**/dist/**', '**/*.js', '*.mjs', 'vitest.config.mts', 'worker-configuration.d.ts'],
+		ignores: [
+			'**/node_modules/**',
+			'**/dist/**',
+			'**/*.js',
+			'*.mjs',
+			'vitest.config.mts',
+			'worker-configuration.d.ts',
+			'**/tsdown.config.ts',
+		],
 	},
 );

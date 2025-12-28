@@ -2,10 +2,29 @@
 	"name": "s3broker",
 	"version": "0.4.3",
 	"description": "S3 proxy library with SigV4 verification and configurable guardrails policies",
-	"main": "src/index.ts",
-	"types": "src/index.ts",
+	"main": "dist/index.js",
+	"module": "dist/index.mjs",
+	"types": "dist/index.d.mts",
+	"exports": {
+		".": {
+			"types": "./dist/index.d.mts",
+			"import": "./dist/index.mjs",
+			"require": "./dist/index.js"
+		},
+		"./sigv4": {
+			"types": "./dist/sigv4.d.mts",
+			"import": "./dist/sigv4.mjs",
+			"require": "./dist/sigv4.js"
+		}
+	},
+	"files": [
+		"dist",
+		"README.md"
+	],
 	"scripts": {
-		"typecheck": "tsc --noEmit"
+		"build": "tsdown",
+		"typecheck": "tsc --noEmit",
+		"prepublishOnly": "npm run build"
 	},
 	"keywords": [
 		"s3",
@@ -13,7 +32,8 @@
 		"sigv4",
 		"aws",
 		"guardrails",
-		"security"
+		"security",
+		"cloudflare-workers"
 	],
 	"license": "MIT",
 	"dependencies": {
@@ -21,8 +41,9 @@
 		"zod": "^4.2.1"
 	},
 	"devDependencies": {
-		"typescript": "^5.5.2",
-		"@cloudflare/workers-types": "^4.1.1"
+		"@cloudflare/workers-types": "^4.1.1",
+		"tsdown": "^0.11.8",
+		"typescript": "^5.5.2"
 	},
 	"author": "Tom Shen",
 	"repository": {
