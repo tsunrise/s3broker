@@ -24,6 +24,8 @@ import { GuardrailConfig } from './guardrails/type';
 // Re-export types
 export type { S3BrokerOptions } from './types';
 export type { GuardrailConfig, GuardrailViolation } from './guardrails/type';
+// Re-export zod type
+export { GuardrailConfig as GuardrailConfigZod } from './guardrails/type';
 
 // Headers that should be forwarded to upstream (allowlist approach)
 const HEADERS_TO_INCLUDE = new Set([

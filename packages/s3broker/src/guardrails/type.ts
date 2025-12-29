@@ -11,12 +11,13 @@ export type GuardrailViolation = {
 
 /*
  * Corresponding config for each object path pattern in regex. First match wins.
+ * If config is null, the guardrail is disabled for that pattern.
  */
 export const GuardrailPolicyConfigPerPattern = <T extends ZodType>(policy: T) =>
 	z.array(
 		z.object({
 			pattern: z.string(),
-			config: policy,
+			config: policy.nullable(),
 		}),
 	);
 export const GuardrailConfig = z.object({

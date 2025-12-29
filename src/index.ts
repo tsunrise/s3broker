@@ -6,8 +6,9 @@
  * and request proxying.
  */
 
-import { handle } from 's3broker';
+import { GuardrailConfig, GuardrailConfigZod, handle } from 's3broker';
 import type { Env } from './env';
+import jsonGuardrailConfig from '../guardrail_policy.json';
 
 export default {
 	async fetch(request, env, _ctx): Promise<Response> {
@@ -22,6 +23,18 @@ export default {
 			return new Response('Server configuration error: missing S3_ENDPOINT', { status: 500 });
 		}
 
+		// Parse custom guardrail policy from env if provided
+		let guardrailConfig: GuardrailConfig | undefined;
+		if (env.GUARDRAIL_POLICY) {
+			try {
+				guardrailConfig = GuardrailConfigZod.parse(JSON.parse(env.GUARDRAIL_POLICY));
+			} catch {
+				return new Response('Server configuration error: invalid GUARDRAIL_POLICY JSON from env', { status: 500 });
+			}
+		} else {
+			guardrailConfig = jsonGuardrailConfig;
+		}
+
 		// Delegate to S3Broker library
 		return handle(request, {
 			s3Endpoint: env.S3_ENDPOINT,
@@ -29,6 +42,7 @@ export default {
 			clientSecretAccessKey: env.CLIENT_SECRET_ACCESS_KEY,
 			upstreamAccessKeyId: env.UPSTREAM_ACCESS_KEY_ID,
 			upstreamSecretAccessKey: env.UPSTREAM_SECRET_ACCESS_KEY,
+			guardrailConfig,
 		});
 	},
 } satisfies ExportedHandler<Env>;
