@@ -55,4 +55,22 @@ export interface Env {
 	 * Set via: wrangler secret put UPSTREAM_SECRET_ACCESS_KEY
 	 */
 	UPSTREAM_SECRET_ACCESS_KEY: string;
+
+	/**
+	 * Optional JSON string containing custom guardrail policy
+	 * If not provided, default guardrails will be used
+	 *
+	 * Example:
+	 * ```json
+	 * {
+	 *   "noDeleteOld": [
+	 *     { "pattern": "/free/.*", "config": null },
+	 *     { "pattern": "/.*", "config": { "noDeleteBeforeSeconds": 60 } }
+	 *   ]
+	 * }
+	 * ```
+	 *
+	 * Set in wrangler.toml under [vars] or via secret
+	 */
+	GUARDRAIL_POLICY?: string;
 }

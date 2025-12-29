@@ -50,12 +50,14 @@ export default {
 
 ## With Custom Guardrails
 
+Example: Reject requests deleting files older than 1 hour unless the file has path prefix `/frequent_updated/`.
+
 ```typescript
 import { handle } from 's3broker';
 
 export default {
 	async fetch(request, env, ctx) {
-		return handle(request, {
+		return handle(request, ctx, {
 			s3Endpoint: env.S3_ENDPOINT,
 			clientAccessKeyId: env.CLIENT_ACCESS_KEY_ID,
 			clientSecretAccessKey: env.CLIENT_SECRET_ACCESS_KEY,
@@ -64,8 +66,12 @@ export default {
 			guardrailConfig: {
 				noDeleteOld: [
 					{
-						pattern: '/protected/.*',
-						config: { noDeleteBeforeSeconds: 3600 }, // Files older than 1h in /protected/ could not be deleted
+						pattern: '/frequent_updated/.*',
+						config: null,
+					},
+					{
+						pattern: '/.*',
+						config: { noDeleteBeforeSeconds: 3600 },
 					},
 				],
 			},

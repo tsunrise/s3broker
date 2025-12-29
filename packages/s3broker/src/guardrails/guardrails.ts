@@ -75,14 +75,17 @@ export function getPolicies(
 	const policies: { name: string; policy: GuardrailPolicy }[] = [];
 
 	// Check noDeleteOld policies - first matching pattern wins
+	// If config is null, the guardrail is disabled for that pattern (exclude case)
 	for (const entry of config.noDeleteOld) {
 		const regex = new RegExp(entry.pattern);
 		if (regex.test(path)) {
-			policies.push({
-				name: 'noDeleteOld',
-				policy: new NoDeleteOldPolicy(entry.config, upstreamFetcher, upstreamEndpoint, currentTimestampMs),
-			});
-			break; // First match wins
+			if (entry.config !== null) {
+				policies.push({
+					name: 'noDeleteOld',
+					policy: new NoDeleteOldPolicy(entry.config, upstreamFetcher, upstreamEndpoint, currentTimestampMs),
+				});
+			}
+			break; // First match wins - even if config is null, we don't check further patterns
 		}
 	}
 

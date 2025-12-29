@@ -351,3 +351,186 @@ describe('Guardrails - NoDeleteOld', () => {
 		expect(response.status).toBe(204);
 	});
 });
+
+describe('Guardrails - Exclude Rules (null config)', () => {
+	const testEnv: Env = {
+		CLIENT_ACCESS_KEY_ID: 'AKIAIOSFODNN7EXAMPLE',
+		CLIENT_SECRET_ACCESS_KEY: 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY',
+		UPSTREAM_ACCESS_KEY_ID: 'AKIOUPSTREAM12345678',
+		UPSTREAM_SECRET_ACCESS_KEY: 'upstreamSecretKey1234567890abcdefghijklmn',
+		S3_ENDPOINT: 'https://test-exclude.r2.cloudflarestorage.com',
+		GUARDRAIL_POLICY: JSON.stringify({
+			noDeleteOld: [
+				{ pattern: '/bucket/free/.*', config: null }, // Exclude /free/ paths from guardrail
+				{ pattern: '/bucket/.*', config: { noDeleteBeforeSeconds: 60 } }, // Apply to all other paths
+			],
+		}),
+	};
+
+	/**
+	 * Helper to create a signed DELETE request
+	 */
+	async function createSignedDeleteRequest(
+		path: string,
+		currentDate: string,
+		currentAmzDate: string,
+	): Promise<Request<unknown, IncomingRequestCfProperties>> {
+		const { deriveSigningKey, calculateSignature, buildCanonicalRequest, createStringToSign } = await import('s3broker/sigv4');
+
+		const region = 'us-east-1';
+		const service = 's3';
+		const signedHeaders = ['host', 'x-amz-content-sha256', 'x-amz-date'];
+		const payloadHash = 'UNSIGNED-PAYLOAD';
+		const requestUrl = `https://example.com${path}`;
+
+		const unsignedRequest = new IncomingRequest(requestUrl, {
+			method: 'DELETE',
+			headers: {
+				host: 'example.com',
+				'x-amz-content-sha256': payloadHash,
+				'x-amz-date': currentAmzDate,
+			},
+		});
+
+		const canonicalRequest = await buildCanonicalRequest(unsignedRequest, signedHeaders, payloadHash, false);
+		const credentialScope = `${currentDate}/${region}/${service}/aws4_request`;
+		const stringToSign = await createStringToSign('AWS4-HMAC-SHA256', currentAmzDate, credentialScope, canonicalRequest);
+		const signingKey = await deriveSigningKey(testEnv.CLIENT_SECRET_ACCESS_KEY, currentDate, region, service);
+		const signature = await calculateSignature(signingKey, stringToSign);
+
+		return new IncomingRequest(requestUrl, {
+			method: 'DELETE',
+			headers: {
+				Authorization: `AWS4-HMAC-SHA256 Credential=${testEnv.CLIENT_ACCESS_KEY_ID}/${currentDate}/${region}/${service}/aws4_request, SignedHeaders=${signedHeaders.join(';')}, Signature=${signature}`,
+				host: 'example.com',
+				'x-amz-content-sha256': payloadHash,
+				'x-amz-date': currentAmzDate,
+			},
+		});
+	}
+
+	it('allows deletion of old objects in excluded paths (/free/)', async () => {
+		const { fetchMock } = await import('cloudflare:test');
+		const { S3Mock } = await import('./s3mock');
+
+		// Current time for the test
+		const now = Date.now();
+		const currentDate = new Date(now).toISOString().slice(0, 10).replace(/-/g, '');
+		const currentAmzDate = new Date(now).toISOString().replace(/[-:]/g, '').slice(0, 15) + '00Z';
+
+		// Create S3 mock with an old object in /free/ path (120 seconds old, exceeds 60s threshold)
+		const s3Mock = new S3Mock(testEnv.S3_ENDPOINT);
+		const objectCreatedAt = now - 120 * 1000; // 120 seconds ago
+		s3Mock.putObject('/bucket/free/old-object', 'old content', new Headers(), {
+			currentTimestampMs: objectCreatedAt,
+		});
+
+		// Activate fetch mocking and attach S3 mock
+		fetchMock.activate();
+		s3Mock.attachToMock(fetchMock);
+
+		// Create signed DELETE request for /free/ path
+		const signedRequest = await createSignedDeleteRequest('/bucket/free/old-object', currentDate, currentAmzDate);
+
+		const ctx = createExecutionContext();
+		const response = await worker.fetch(signedRequest, testEnv, ctx);
+		await waitOnExecutionContext(ctx);
+
+		fetchMock.deactivate();
+
+		// Should be allowed (204 No Content) because /free/ is excluded from guardrail
+		expect(response.status).toBe(204);
+	});
+
+	it('blocks deletion of old objects in protected paths', async () => {
+		const { fetchMock } = await import('cloudflare:test');
+		const { S3Mock } = await import('./s3mock');
+
+		// Current time for the test
+		const now = Date.now();
+		const currentDate = new Date(now).toISOString().slice(0, 10).replace(/-/g, '');
+		const currentAmzDate = new Date(now).toISOString().replace(/[-:]/g, '').slice(0, 15) + '00Z';
+
+		// Use a unique endpoint to avoid mock conflicts
+		const uniqueEndpoint = 'https://test-exclude2.r2.cloudflarestorage.com';
+		const testEnvWithUniqueEndpoint: Env = {
+			...testEnv,
+			S3_ENDPOINT: uniqueEndpoint,
+		};
+
+		// Create S3 mock with an old object in /protected/ path (120 seconds old, exceeds 60s threshold)
+		const s3Mock = new S3Mock(uniqueEndpoint);
+		const objectCreatedAt = now - 120 * 1000; // 120 seconds ago
+		s3Mock.putObject('/bucket/protected/old-object', 'old content', new Headers(), {
+			currentTimestampMs: objectCreatedAt,
+		});
+
+		// Activate fetch mocking and attach S3 mock
+		fetchMock.activate();
+		s3Mock.attachToMock(fetchMock);
+
+		// Create signed DELETE request for /protected/ path
+		const signedRequest = await createSignedDeleteRequest('/bucket/protected/old-object', currentDate, currentAmzDate);
+
+		const ctx = createExecutionContext();
+		const response = await worker.fetch(signedRequest, testEnvWithUniqueEndpoint, ctx);
+		await waitOnExecutionContext(ctx);
+
+		fetchMock.deactivate();
+
+		// Should be blocked by guardrail (403 Forbidden) because /protected/ matches the second pattern
+		expect(response.status).toBe(403);
+		const text = await response.text();
+		expect(text).toContain('noDeleteOld');
+	});
+
+	it('first matching pattern wins - more specific exclude takes priority', async () => {
+		const { fetchMock } = await import('cloudflare:test');
+		const { S3Mock } = await import('./s3mock');
+
+		// Current time for the test
+		const now = Date.now();
+		const currentDate = new Date(now).toISOString().slice(0, 10).replace(/-/g, '');
+		const currentAmzDate = new Date(now).toISOString().replace(/[-:]/g, '').slice(0, 15) + '00Z';
+
+		// Use a unique endpoint
+		const uniqueEndpoint = 'https://test-exclude3.r2.cloudflarestorage.com';
+		const testEnvSpecificFirst: Env = {
+			CLIENT_ACCESS_KEY_ID: 'AKIAIOSFODNN7EXAMPLE',
+			CLIENT_SECRET_ACCESS_KEY: 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY',
+			UPSTREAM_ACCESS_KEY_ID: 'AKIOUPSTREAM12345678',
+			UPSTREAM_SECRET_ACCESS_KEY: 'upstreamSecretKey1234567890abcdefghijklmn',
+			S3_ENDPOINT: uniqueEndpoint,
+			GUARDRAIL_POLICY: JSON.stringify({
+				noDeleteOld: [
+					{ pattern: '/bucket/free/vip/.*', config: { noDeleteBeforeSeconds: 120 } }, // VIP within free still protected
+					{ pattern: '/bucket/free/.*', config: null }, // Exclude /free/ paths
+					{ pattern: '/bucket/.*', config: { noDeleteBeforeSeconds: 60 } }, // Protect all other paths
+				],
+			}),
+		};
+
+		// Create S3 mock with an old object in /free/vip/ path (90 seconds old)
+		const s3Mock = new S3Mock(uniqueEndpoint);
+		const objectCreatedAt = now - 90 * 1000; // 90 seconds ago (within 120s threshold, but > 60s)
+		s3Mock.putObject('/bucket/free/vip/important', 'vip content', new Headers(), {
+			currentTimestampMs: objectCreatedAt,
+		});
+
+		// Activate fetch mocking and attach S3 mock
+		fetchMock.activate();
+		s3Mock.attachToMock(fetchMock);
+
+		// Create signed DELETE request for /free/vip/ path
+		const signedRequest = await createSignedDeleteRequest('/bucket/free/vip/important', currentDate, currentAmzDate);
+
+		const ctx = createExecutionContext();
+		const response = await worker.fetch(signedRequest, testEnvSpecificFirst, ctx);
+		await waitOnExecutionContext(ctx);
+
+		fetchMock.deactivate();
+
+		// Should be allowed because object age (90s) is within the 120s threshold of the first matching pattern
+		expect(response.status).toBe(204);
+	});
+});
