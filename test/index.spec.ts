@@ -534,6 +534,54 @@ describe('Guardrails - Exclude Rules (null config)', () => {
 		// Should be allowed because object age (90s) is within the 120s threshold of the first matching pattern
 		expect(response.status).toBe(204);
 	});
+
+	it('pattern matches full path only (not substring)', async () => {
+		const { fetchMock } = await import('cloudflare:test');
+		const { S3Mock } = await import('./s3mock');
+
+		// Current time for the test
+		const now = Date.now();
+		const currentDate = new Date(now).toISOString().slice(0, 10).replace(/-/g, '');
+		const currentAmzDate = new Date(now).toISOString().replace(/[-:]/g, '').slice(0, 15) + '00Z';
+
+		// Use a unique endpoint
+		const uniqueEndpoint = 'https://test-fullmatch.r2.cloudflarestorage.com';
+		const testEnvFullMatch: Env = {
+			CLIENT_ACCESS_KEY_ID: 'AKIAIOSFODNN7EXAMPLE',
+			CLIENT_SECRET_ACCESS_KEY: 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY',
+			UPSTREAM_ACCESS_KEY_ID: 'AKIOUPSTREAM12345678',
+			UPSTREAM_SECRET_ACCESS_KEY: 'upstreamSecretKey1234567890abcdefghijklmn',
+			S3_ENDPOINT: uniqueEndpoint,
+			GUARDRAIL_POLICY: JSON.stringify({
+				// Pattern '/bucket/tom/.*' should match '/bucket/tom/a' but NOT '/bucket/alpha/tom/a'
+				noDeleteOld: [{ pattern: '/bucket/tom/.*', config: { noDeleteBeforeSeconds: 60 } }],
+			}),
+		};
+
+		// Create S3 mock with an old object at path that contains 'tom' but doesn't START with '/bucket/tom/'
+		const s3Mock = new S3Mock(uniqueEndpoint);
+		const objectCreatedAt = now - 120 * 1000; // 120 seconds ago
+		s3Mock.putObject('/bucket/alpha/tom/file', 'old content', new Headers(), {
+			currentTimestampMs: objectCreatedAt,
+		});
+
+		// Activate fetch mocking and attach S3 mock
+		fetchMock.activate();
+		s3Mock.attachToMock(fetchMock);
+
+		// Create signed DELETE request for '/bucket/alpha/tom/file' - should NOT match pattern '/bucket/tom/.*'
+		const signedRequest = await createSignedDeleteRequest('/bucket/alpha/tom/file', currentDate, currentAmzDate);
+
+		const ctx = createExecutionContext();
+		const response = await worker.fetch(signedRequest, testEnvFullMatch, ctx);
+		await waitOnExecutionContext(ctx);
+
+		fetchMock.deactivate();
+
+		// Should be allowed (204 No Content) because '/bucket/alpha/tom/file' does NOT match pattern '/bucket/tom/.*'
+		// The pattern requires the path to START with '/bucket/tom/', not just contain 'tom' somewhere
+		expect(response.status).toBe(204);
+	});
 });
 
 describe('Guardrails - NoReplaceOld', () => {

@@ -90,6 +90,22 @@ export default {
 };
 ```
 
+### Pattern Syntax
+
+Patterns use regex syntax with the following rules:
+
+- **Full path matching**: Patterns are matched against the entire path (automatically anchored with `^` and `$`)
+- **Auto-prepend `/`**: If a pattern doesn't start with `/`, it will be automatically prepended
+- **Do NOT include anchors**: Do not include `^` at the start or `$` at the end — they are added automatically and will cause an error if included
+
+**Examples:**
+
+| Pattern          | Matches                                | Does NOT Match               |
+| ---------------- | -------------------------------------- | ---------------------------- |
+| `/bucket/tom/.*` | `/bucket/tom/file.txt`                 | `/alpha/bucket/tom/file.txt` |
+| `/free/.*`       | `/free/anything`                       | `/notfree/anything`          |
+| `bucket/.*`      | `/bucket/file.txt` (auto-prepends `/`) | —                            |
+
 ## Limitations
 
 - **`STREAMING-AWS4-HMAC-SHA256-PAYLOAD`** payload signing method is not supported.
