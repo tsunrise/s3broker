@@ -1,17 +1,17 @@
 import { GuardrailPolicy, GuardrailViolation, UpstreamError } from './type';
 import { z } from 'zod';
 
-export const NoDeleteOldPolicyConfig = z.object({
-	noDeleteBeforeSeconds: z.number().int(),
+export const NoReplaceOldPolicyConfig = z.object({
+	noReplaceBeforeSeconds: z.number().int(),
 });
 
-export type NoDeleteOldPolicyConfig = z.infer<typeof NoDeleteOldPolicyConfig>;
+export type NoReplaceOldPolicyConfig = z.infer<typeof NoReplaceOldPolicyConfig>;
 
-export class NoDeleteOldPolicy implements GuardrailPolicy {
-	private config: NoDeleteOldPolicyConfig;
+export class NoReplaceOldPolicy implements GuardrailPolicy {
+	private config: NoReplaceOldPolicyConfig;
 	private currentTimestampMs: number;
 
-	constructor(config: NoDeleteOldPolicyConfig, currentTimestampMs: number) {
+	constructor(config: NoReplaceOldPolicyConfig, currentTimestampMs: number) {
 		this.config = config;
 		this.currentTimestampMs = currentTimestampMs;
 	}
@@ -20,35 +20,37 @@ export class NoDeleteOldPolicy implements GuardrailPolicy {
 		request: Request<unknown, IncomingRequestCfProperties>,
 		metadata: () => Promise<Headers>,
 	): Promise<GuardrailViolation | null> {
-		// Only applies to DELETE requests
-		if (request.method !== 'DELETE') {
+		// Only applies to PUT requests
+		if (request.method !== 'PUT') {
 			return null;
 		}
 
 		try {
+			// Check if object exists and get its metadata via HEAD request
+			// This doesn't buffer the PUT body - just checks headers
 			const headers = await metadata();
 
 			// Get the Last-Modified header to determine object age
 			const lastModified = headers.get('Last-Modified');
 			if (!lastModified) {
-				// If no Last-Modified header, allow deletion (object might be newly created)
+				// If no Last-Modified header, allow replacement (object metadata issue)
 				return null;
 			}
 
 			const objectCreatedAtMs = new Date(lastModified).getTime();
 			const objectAgeMs = this.currentTimestampMs - objectCreatedAtMs;
-			const thresholdMs = this.config.noDeleteBeforeSeconds * 1000;
+			const thresholdMs = this.config.noReplaceBeforeSeconds * 1000;
 
 			if (objectAgeMs > thresholdMs) {
 				return {
-					violation: `Cannot delete object: object is ${Math.floor(objectAgeMs / 1000)} seconds old, which exceeds the ${this.config.noDeleteBeforeSeconds} seconds threshold`,
+					violation: `Cannot replace object: object is ${Math.floor(objectAgeMs / 1000)} seconds old, which exceeds the ${this.config.noReplaceBeforeSeconds} seconds threshold`,
 				};
 			}
 
 			return null;
 		} catch (error) {
 			if (error instanceof UpstreamError && error.code === '404') {
-				// Object doesn't exist, allow deletion attempt (will fail at upstream)
+				// Object doesn't exist, allow PUT (creating new object)
 				return null;
 			}
 			throw error;

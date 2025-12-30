@@ -507,6 +507,7 @@ describe('Guardrails - Exclude Rules (null config)', () => {
 					{ pattern: '/bucket/free/.*', config: null }, // Exclude /free/ paths
 					{ pattern: '/bucket/.*', config: { noDeleteBeforeSeconds: 60 } }, // Protect all other paths
 				],
+				noReplaceOld: [],
 			}),
 		};
 
@@ -532,5 +533,183 @@ describe('Guardrails - Exclude Rules (null config)', () => {
 
 		// Should be allowed because object age (90s) is within the 120s threshold of the first matching pattern
 		expect(response.status).toBe(204);
+	});
+});
+
+describe('Guardrails - NoReplaceOld', () => {
+	const testEnv: Env = {
+		CLIENT_ACCESS_KEY_ID: 'AKIAIOSFODNN7EXAMPLE',
+		CLIENT_SECRET_ACCESS_KEY: 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY',
+		UPSTREAM_ACCESS_KEY_ID: 'AKIOUPSTREAM12345678',
+		UPSTREAM_SECRET_ACCESS_KEY: 'upstreamSecretKey1234567890abcdefghijklmn',
+		S3_ENDPOINT: 'https://test-replace.r2.cloudflarestorage.com',
+		GUARDRAIL_POLICY: JSON.stringify({
+			noReplaceOld: [{ pattern: '/.*', config: { noReplaceBeforeSeconds: 60 } }],
+		}),
+	};
+
+	/**
+	 * Helper to create a signed PUT request
+	 */
+	async function createSignedPutRequest(
+		path: string,
+		currentDate: string,
+		currentAmzDate: string,
+		body: string = 'new content',
+	): Promise<Request<unknown, IncomingRequestCfProperties>> {
+		const { deriveSigningKey, calculateSignature, buildCanonicalRequest, createStringToSign } = await import('s3broker/sigv4');
+
+		const region = 'us-east-1';
+		const service = 's3';
+		const signedHeaders = ['host', 'x-amz-content-sha256', 'x-amz-date'];
+		const payloadHash = 'UNSIGNED-PAYLOAD';
+		const requestUrl = `https://example.com${path}`;
+
+		const unsignedRequest = new IncomingRequest(requestUrl, {
+			method: 'PUT',
+			headers: {
+				host: 'example.com',
+				'x-amz-content-sha256': payloadHash,
+				'x-amz-date': currentAmzDate,
+			},
+			body,
+		});
+
+		const canonicalRequest = await buildCanonicalRequest(unsignedRequest, signedHeaders, payloadHash, false);
+		const credentialScope = `${currentDate}/${region}/${service}/aws4_request`;
+		const stringToSign = await createStringToSign('AWS4-HMAC-SHA256', currentAmzDate, credentialScope, canonicalRequest);
+		const signingKey = await deriveSigningKey(testEnv.CLIENT_SECRET_ACCESS_KEY, currentDate, region, service);
+		const signature = await calculateSignature(signingKey, stringToSign);
+
+		return new IncomingRequest(requestUrl, {
+			method: 'PUT',
+			headers: {
+				Authorization: `AWS4-HMAC-SHA256 Credential=${testEnv.CLIENT_ACCESS_KEY_ID}/${currentDate}/${region}/${service}/aws4_request, SignedHeaders=${signedHeaders.join(';')}, Signature=${signature}`,
+				host: 'example.com',
+				'x-amz-content-sha256': payloadHash,
+				'x-amz-date': currentAmzDate,
+			},
+			body,
+		});
+	}
+
+	it('blocks replacing objects older than threshold', async () => {
+		const { fetchMock } = await import('cloudflare:test');
+		const { S3Mock } = await import('./s3mock');
+
+		// Current time for the test
+		const now = Date.now();
+		const currentDate = new Date(now).toISOString().slice(0, 10).replace(/-/g, '');
+		const currentAmzDate = new Date(now).toISOString().replace(/[-:]/g, '').slice(0, 15) + '00Z';
+
+		// Use a unique endpoint to avoid mock conflicts
+		const uniqueEndpoint = 'https://test-replace-block.r2.cloudflarestorage.com';
+		const testEnvWithUniqueEndpoint: Env = {
+			...testEnv,
+			S3_ENDPOINT: uniqueEndpoint,
+		};
+
+		// Create S3 mock with an object created 120 seconds ago (older than 60s threshold)
+		const s3Mock = new S3Mock(uniqueEndpoint);
+		const objectCreatedAt = now - 120 * 1000; // 120 seconds ago
+		s3Mock.putObject('/bucket/old-object', 'old content', new Headers(), {
+			currentTimestampMs: objectCreatedAt,
+		});
+
+		// Activate fetch mocking and attach S3 mock
+		fetchMock.activate();
+		s3Mock.attachToMock(fetchMock);
+
+		// Create signed PUT request
+		const signedRequest = await createSignedPutRequest('/bucket/old-object', currentDate, currentAmzDate);
+
+		const ctx = createExecutionContext();
+		const response = await worker.fetch(signedRequest, testEnvWithUniqueEndpoint, ctx);
+		await waitOnExecutionContext(ctx);
+
+		fetchMock.deactivate();
+
+		// Should be blocked by guardrail (403 Forbidden)
+		expect(response.status).toBe(403);
+		const text = await response.text();
+		expect(text).toContain('noReplaceOld');
+		expect(text).toContain('exceeds');
+	});
+
+	it('allows replacing recently created objects', async () => {
+		const { fetchMock } = await import('cloudflare:test');
+		const { S3Mock } = await import('./s3mock');
+
+		// Current time for the test
+		const now = Date.now();
+		const currentDate = new Date(now).toISOString().slice(0, 10).replace(/-/g, '');
+		const currentAmzDate = new Date(now).toISOString().replace(/[-:]/g, '').slice(0, 15) + '00Z';
+
+		// Use a unique endpoint to avoid mock conflicts with other tests
+		const uniqueEndpoint = 'https://test-replace2.r2.cloudflarestorage.com';
+		const testEnvWithUniqueEndpoint: Env = {
+			...testEnv,
+			S3_ENDPOINT: uniqueEndpoint,
+		};
+
+		// Create S3 mock with an object created 30 seconds ago (within 60s threshold)
+		const s3Mock = new S3Mock(uniqueEndpoint);
+		const objectCreatedAt = now - 30 * 1000; // 30 seconds ago
+		s3Mock.putObject('/bucket/new-object', 'new content', new Headers(), {
+			currentTimestampMs: objectCreatedAt,
+		});
+
+		// Activate fetch mocking and attach S3 mock
+		fetchMock.activate();
+		s3Mock.attachToMock(fetchMock);
+
+		// Create signed PUT request
+		const signedRequest = await createSignedPutRequest('/bucket/new-object', currentDate, currentAmzDate);
+
+		const ctx = createExecutionContext();
+		const response = await worker.fetch(signedRequest, testEnvWithUniqueEndpoint, ctx);
+		await waitOnExecutionContext(ctx);
+
+		fetchMock.deactivate();
+
+		// Should be allowed (200 OK from upstream mock)
+		expect(response.status).toBe(200);
+	});
+
+	it('allows creating new objects (PUT to non-existing path)', async () => {
+		const { fetchMock } = await import('cloudflare:test');
+		const { S3Mock } = await import('./s3mock');
+
+		// Current time for the test
+		const now = Date.now();
+		const currentDate = new Date(now).toISOString().slice(0, 10).replace(/-/g, '');
+		const currentAmzDate = new Date(now).toISOString().replace(/[-:]/g, '').slice(0, 15) + '00Z';
+
+		// Use a unique endpoint
+		const uniqueEndpoint = 'https://test-replace3.r2.cloudflarestorage.com';
+		const testEnvWithUniqueEndpoint: Env = {
+			...testEnv,
+			S3_ENDPOINT: uniqueEndpoint,
+		};
+
+		// Create S3 mock with NO existing object at the path
+		const s3Mock = new S3Mock(uniqueEndpoint);
+		// Don't put any object - simulating creating a new object
+
+		// Activate fetch mocking and attach S3 mock
+		fetchMock.activate();
+		s3Mock.attachToMock(fetchMock);
+
+		// Create signed PUT request for a non-existing object
+		const signedRequest = await createSignedPutRequest('/bucket/brand-new-object', currentDate, currentAmzDate);
+
+		const ctx = createExecutionContext();
+		const response = await worker.fetch(signedRequest, testEnvWithUniqueEndpoint, ctx);
+		await waitOnExecutionContext(ctx);
+
+		fetchMock.deactivate();
+
+		// Should be allowed (200 OK from upstream mock) - creating new objects is always allowed
+		expect(response.status).toBe(200);
 	});
 });
