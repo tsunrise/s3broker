@@ -1,6 +1,9 @@
 import { AwsClient } from 'aws4fetch';
 import { GuardrailConfig, GuardrailPolicy, GuardrailViolation, UpstreamError } from './type';
 import { NoDeleteOldPolicy } from './no-delete-old';
+import { NoReplaceOldPolicy } from './no-replace-old';
+import { getObjectMetadata } from './s3_helper';
+import { cached } from '../utils';
 
 /**
  * Evaluate guardrails for a given request
@@ -11,22 +14,24 @@ import { NoDeleteOldPolicy } from './no-delete-old';
 export async function evaluateGuardrails(
 	request: Request<unknown, IncomingRequestCfProperties>,
 	upstreamFetcher: AwsClient,
-	s3_endpoint: string,
+	s3Endpoint: string,
 	currentTimestampMs: number,
 	config: GuardrailConfig,
 ): Promise<(GuardrailViolation & { policy: string }) | null> {
 	const path = new URL(request.url).pathname;
-	const policies = getPolicies(config, path, upstreamFetcher, s3_endpoint, currentTimestampMs);
+	const policies = getPolicies(config, path, currentTimestampMs);
 
 	if (policies.length === 0) {
 		return null;
 	}
 
+	const metadata = cached(() => getObjectMetadata(upstreamFetcher, s3Endpoint + path));
+
 	// Create evaluation promises that include policy name
 	const evalPromises = policies.map(({ name: policyName, policy }) => ({
 		policyName,
 		promise: (async () => {
-			const violation = await policy.evaluate(request);
+			const violation = await policy.evaluate(request, metadata);
 			return violation ? { ...violation, policy: policyName } : null;
 		})(),
 	}));
@@ -68,21 +73,34 @@ export async function evaluateGuardrails(
 export function getPolicies(
 	config: GuardrailConfig,
 	path: string,
-	upstreamFetcher: AwsClient,
-	upstreamEndpoint: string,
 	currentTimestampMs: number,
 ): { name: string; policy: GuardrailPolicy }[] {
 	const policies: { name: string; policy: GuardrailPolicy }[] = [];
 
 	// Check noDeleteOld policies - first matching pattern wins
 	// If config is null, the guardrail is disabled for that pattern (exclude case)
-	for (const entry of config.noDeleteOld) {
+	for (const entry of config.noDeleteOld ?? []) {
 		const regex = new RegExp(entry.pattern);
 		if (regex.test(path)) {
 			if (entry.config !== null) {
 				policies.push({
 					name: 'noDeleteOld',
-					policy: new NoDeleteOldPolicy(entry.config, upstreamFetcher, upstreamEndpoint, currentTimestampMs),
+					policy: new NoDeleteOldPolicy(entry.config, currentTimestampMs),
+				});
+			}
+			break; // First match wins - even if config is null, we don't check further patterns
+		}
+	}
+
+	// Check noReplaceOld policies - first matching pattern wins
+	// If config is null, the guardrail is disabled for that pattern (exclude case)
+	for (const entry of config.noReplaceOld ?? []) {
+		const regex = new RegExp(entry.pattern);
+		if (regex.test(path)) {
+			if (entry.config !== null) {
+				policies.push({
+					name: 'noReplaceOld',
+					policy: new NoReplaceOldPolicy(entry.config, currentTimestampMs),
 				});
 			}
 			break; // First match wins - even if config is null, we don't check further patterns

@@ -10,5 +10,17 @@
 				"noDeleteBeforeSeconds": 60
 			}
 		}
+	],
+	"noReplaceOld": [
+		{
+			"pattern": "/free/.*",
+			"config": null
+		},
+		{
+			"pattern": "/.*",
+			"config": {
+				"noReplaceBeforeSeconds": 60
+			}
+		}
 	]
 }

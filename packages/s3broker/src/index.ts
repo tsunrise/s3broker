@@ -90,6 +90,14 @@ export const defaultGuardrailConfig: GuardrailConfig = {
 			},
 		},
 	],
+	noReplaceOld: [
+		{
+			pattern: '/.*',
+			config: {
+				noReplaceBeforeSeconds: 60,
+			},
+		},
+	],
 };
 
 /**

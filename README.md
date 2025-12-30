@@ -50,9 +50,9 @@ export default {
 };
 ```
 
-### With Custom Guardrails
+## With Custom Guardrails
 
-Example: Reject requests deleting files older than 1 hour unless the file has path prefix `/frequent_updated/`.
+Example: Reject requests deleting/replacing files older than 1 hour unless the file has path prefix `/frequent_updated/`.
 
 ```typescript
 import { handle } from 's3broker';
@@ -76,6 +76,16 @@ export default {
 						config: { noDeleteBeforeSeconds: 3600 },
 					},
 				],
+				noReplaceOld: [
+					{
+						pattern: '/frequent_updated/.*',
+						config: null,
+					},
+					{
+						pattern: '/.*',
+						config: { noReplaceBeforeSeconds: 3600 },
+					},
+				],
 			},
 		});
 	},
@@ -87,6 +97,10 @@ export default {
 #### `noDeleteOld`
 
 Prevents deletion of objects unless they were created recently (within `noDeleteBeforeSeconds`).
+
+#### `noReplaceOld`
+
+Prevents replacement of objects unless they were created recently (within `noReplaceBeforeSeconds`).
 
 ## Limitations
 
