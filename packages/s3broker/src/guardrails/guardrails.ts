@@ -68,6 +68,35 @@ export async function evaluateGuardrails(
 }
 
 /**
+ * Create a regex that fully matches the path (not substring match).
+ *
+ * Pattern rules:
+ * - Patterns are matched against the full path (anchored with ^ and $)
+ * - If a pattern doesn't start with '/', it will be automatically prepended
+ * - Do NOT include ^ at the start or $ at the end - they are added automatically
+ *
+ * Examples:
+ * - '/bucket/tom/.*' matches '/bucket/tom/file.txt' but NOT '/alpha/bucket/tom/file.txt'
+ * - 'bucket/.*' is equivalent to '/bucket/.*'
+ *
+ * @throws Error if pattern starts with ^ or ends with $
+ */
+function createFullMatchRegex(pattern: string): RegExp {
+	// Validate: user should not include anchors
+	if (pattern.startsWith('^')) {
+		throw new Error(`Invalid pattern "${pattern}": do not include ^ at the start, patterns are automatically anchored`);
+	}
+	if (pattern.endsWith('$')) {
+		throw new Error(`Invalid pattern "${pattern}": do not include $ at the end, patterns are automatically anchored`);
+	}
+
+	// Normalize pattern: prepend '/' if missing
+	const normalizedPattern = pattern.startsWith('/') ? pattern : '/' + pattern;
+	// Anchor the regex to match the entire path
+	return new RegExp(`^${normalizedPattern}$`);
+}
+
+/**
  * Get all applicable policies for a given path
  */
 export function getPolicies(
@@ -80,7 +109,7 @@ export function getPolicies(
 	// Check noDeleteOld policies - first matching pattern wins
 	// If config is null, the guardrail is disabled for that pattern (exclude case)
 	for (const entry of config.noDeleteOld ?? []) {
-		const regex = new RegExp(entry.pattern);
+		const regex = createFullMatchRegex(entry.pattern);
 		if (regex.test(path)) {
 			if (entry.config !== null) {
 				policies.push({
@@ -95,7 +124,7 @@ export function getPolicies(
 	// Check noReplaceOld policies - first matching pattern wins
 	// If config is null, the guardrail is disabled for that pattern (exclude case)
 	for (const entry of config.noReplaceOld ?? []) {
-		const regex = new RegExp(entry.pattern);
+		const regex = createFullMatchRegex(entry.pattern);
 		if (regex.test(path)) {
 			if (entry.config !== null) {
 				policies.push({
