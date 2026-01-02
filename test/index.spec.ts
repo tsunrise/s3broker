@@ -761,3 +761,210 @@ describe('Guardrails - NoReplaceOld', () => {
 		expect(response.status).toBe(200);
 	});
 });
+
+describe('Managed SSE', () => {
+	// Test base64 key (32 bytes = 256 bits for AES-256)
+	const testKey = btoa('12345678901234567890123456789012'); // 32-byte key base64 encoded
+
+	const testEnv: Env = {
+		CLIENT_ACCESS_KEY_ID: 'AKIAIOSFODNN7EXAMPLE',
+		CLIENT_SECRET_ACCESS_KEY: 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY',
+		UPSTREAM_ACCESS_KEY_ID: 'AKIOUPSTREAM12345678',
+		UPSTREAM_SECRET_ACCESS_KEY: 'upstreamSecretKey1234567890abcdefghijklmn',
+		S3_ENDPOINT: 'https://test-sse.r2.cloudflarestorage.com',
+		GUARDRAIL_POLICY: JSON.stringify({
+			managedSse: [{ pattern: '/bucket/encrypted/.*', config: { key: testKey } }],
+		}),
+	};
+
+	/**
+	 * Helper to create a signed PUT request
+	 */
+	async function createSignedPutRequest(
+		path: string,
+		currentDate: string,
+		currentAmzDate: string,
+		body: string = 'test content',
+	): Promise<Request<unknown, IncomingRequestCfProperties>> {
+		const { deriveSigningKey, calculateSignature, buildCanonicalRequest, createStringToSign } = await import('s3broker/sigv4');
+
+		const region = 'us-east-1';
+		const service = 's3';
+		const signedHeaders = ['host', 'x-amz-content-sha256', 'x-amz-date'];
+		const payloadHash = 'UNSIGNED-PAYLOAD';
+		const requestUrl = `https://example.com${path}`;
+
+		const IncomingRequest = Request<unknown, IncomingRequestCfProperties>;
+		const unsignedRequest = new IncomingRequest(requestUrl, {
+			method: 'PUT',
+			headers: {
+				host: 'example.com',
+				'x-amz-content-sha256': payloadHash,
+				'x-amz-date': currentAmzDate,
+			},
+			body,
+		});
+
+		const canonicalRequest = await buildCanonicalRequest(unsignedRequest, signedHeaders, payloadHash, false);
+		const credentialScope = `${currentDate}/${region}/${service}/aws4_request`;
+		const stringToSign = await createStringToSign('AWS4-HMAC-SHA256', currentAmzDate, credentialScope, canonicalRequest);
+		const signingKey = await deriveSigningKey(testEnv.CLIENT_SECRET_ACCESS_KEY, currentDate, region, service);
+		const signature = await calculateSignature(signingKey, stringToSign);
+
+		return new IncomingRequest(requestUrl, {
+			method: 'PUT',
+			headers: {
+				Authorization: `AWS4-HMAC-SHA256 Credential=${testEnv.CLIENT_ACCESS_KEY_ID}/${currentDate}/${region}/${service}/aws4_request, SignedHeaders=${signedHeaders.join(';')}, Signature=${signature}`,
+				host: 'example.com',
+				'x-amz-content-sha256': payloadHash,
+				'x-amz-date': currentAmzDate,
+			},
+			body,
+		});
+	}
+
+	it('injects SSE headers for PUT requests in managed SSE paths', async () => {
+		const { fetchMock } = await import('cloudflare:test');
+		const { S3Mock } = await import('./s3mock');
+
+		const now = Date.now();
+		const currentDate = new Date(now).toISOString().slice(0, 10).replace(/-/g, '');
+		const currentAmzDate = new Date(now).toISOString().replace(/[-:]/g, '').slice(0, 15) + '00Z';
+
+		const s3Mock = new S3Mock(testEnv.S3_ENDPOINT);
+
+		fetchMock.activate();
+		s3Mock.attachToMock(fetchMock);
+
+		const signedRequest = await createSignedPutRequest('/bucket/encrypted/file.txt', currentDate, currentAmzDate);
+
+		const ctx = createExecutionContext();
+		const response = await worker.fetch(signedRequest, testEnv, ctx);
+		await waitOnExecutionContext(ctx);
+
+		fetchMock.deactivate();
+
+		expect(response.status).toBe(200);
+
+		// Verify SSE headers were sent to upstream
+		const capturedHeaders = s3Mock.getLastRequestHeaders('/bucket/encrypted/file.txt');
+		expect(capturedHeaders).toBeDefined();
+		expect(capturedHeaders!['x-amz-server-side-encryption-customer-algorithm']).toBe('AES256');
+		expect(capturedHeaders!['x-amz-server-side-encryption-customer-key']).toBe(testKey);
+		expect(capturedHeaders!['x-amz-server-side-encryption-customer-key-md5']).toBeDefined();
+	});
+
+	it('does not inject SSE headers for paths outside managed SSE config', async () => {
+		const { fetchMock } = await import('cloudflare:test');
+		const { S3Mock } = await import('./s3mock');
+
+		const now = Date.now();
+		const currentDate = new Date(now).toISOString().slice(0, 10).replace(/-/g, '');
+		const currentAmzDate = new Date(now).toISOString().replace(/[-:]/g, '').slice(0, 15) + '00Z';
+
+		const uniqueEndpoint = 'https://test-sse2.r2.cloudflarestorage.com';
+		const testEnvWithUniqueEndpoint: Env = {
+			...testEnv,
+			S3_ENDPOINT: uniqueEndpoint,
+		};
+
+		const s3Mock = new S3Mock(uniqueEndpoint);
+
+		fetchMock.activate();
+		s3Mock.attachToMock(fetchMock);
+
+		// Use path outside the managed SSE pattern (/bucket/encrypted/.*)
+		const signedRequest = await createSignedPutRequest('/bucket/unencrypted/file.txt', currentDate, currentAmzDate);
+
+		const ctx = createExecutionContext();
+		const response = await worker.fetch(signedRequest, testEnvWithUniqueEndpoint, ctx);
+		await waitOnExecutionContext(ctx);
+
+		fetchMock.deactivate();
+
+		expect(response.status).toBe(200);
+
+		// Verify SSE headers were NOT sent to upstream
+		const capturedHeaders = s3Mock.getLastRequestHeaders('/bucket/unencrypted/file.txt');
+		expect(capturedHeaders).toBeDefined();
+		expect(capturedHeaders!['x-amz-server-side-encryption-customer-algorithm']).toBeUndefined();
+	});
+
+	it('passes through client-provided SSE headers without overwriting', async () => {
+		const { fetchMock } = await import('cloudflare:test');
+		const { S3Mock } = await import('./s3mock');
+
+		const now = Date.now();
+		const currentDate = new Date(now).toISOString().slice(0, 10).replace(/-/g, '');
+		const currentAmzDate = new Date(now).toISOString().replace(/[-:]/g, '').slice(0, 15) + '00Z';
+
+		const clientKey = btoa('clientkey1234567890123456789012'); // Different 32-byte key
+
+		const uniqueEndpoint = 'https://test-sse3.r2.cloudflarestorage.com';
+		const testEnvWithUniqueEndpoint: Env = {
+			...testEnv,
+			S3_ENDPOINT: uniqueEndpoint,
+		};
+
+		const s3Mock = new S3Mock(uniqueEndpoint);
+
+		fetchMock.activate();
+		s3Mock.attachToMock(fetchMock);
+
+		// Create request with client-provided SSE headers
+		const { deriveSigningKey, calculateSignature, buildCanonicalRequest, createStringToSign } = await import('s3broker/sigv4');
+		const region = 'us-east-1';
+		const service = 's3';
+		const signedHeaders = ['host', 'x-amz-content-sha256', 'x-amz-date', 'x-amz-server-side-encryption-customer-algorithm'];
+		const payloadHash = 'UNSIGNED-PAYLOAD';
+		const requestUrl = 'https://example.com/bucket/encrypted/file.txt';
+
+		const IncomingRequest = Request<unknown, IncomingRequestCfProperties>;
+		const unsignedRequest = new IncomingRequest(requestUrl, {
+			method: 'PUT',
+			headers: {
+				host: 'example.com',
+				'x-amz-content-sha256': payloadHash,
+				'x-amz-date': currentAmzDate,
+				'x-amz-server-side-encryption-customer-algorithm': 'AES256',
+				'x-amz-server-side-encryption-customer-key': clientKey,
+				'x-amz-server-side-encryption-customer-key-md5': 'client-md5',
+			},
+			body: 'test content',
+		});
+
+		const canonicalRequest = await buildCanonicalRequest(unsignedRequest, signedHeaders, payloadHash, false);
+		const credentialScope = `${currentDate}/${region}/${service}/aws4_request`;
+		const stringToSign = await createStringToSign('AWS4-HMAC-SHA256', currentAmzDate, credentialScope, canonicalRequest);
+		const signingKey = await deriveSigningKey(testEnvWithUniqueEndpoint.CLIENT_SECRET_ACCESS_KEY, currentDate, region, service);
+		const signature = await calculateSignature(signingKey, stringToSign);
+
+		const signedRequest = new IncomingRequest(requestUrl, {
+			method: 'PUT',
+			headers: {
+				Authorization: `AWS4-HMAC-SHA256 Credential=${testEnvWithUniqueEndpoint.CLIENT_ACCESS_KEY_ID}/${currentDate}/${region}/${service}/aws4_request, SignedHeaders=${signedHeaders.join(';')}, Signature=${signature}`,
+				host: 'example.com',
+				'x-amz-content-sha256': payloadHash,
+				'x-amz-date': currentAmzDate,
+				'x-amz-server-side-encryption-customer-algorithm': 'AES256',
+				'x-amz-server-side-encryption-customer-key': clientKey,
+				'x-amz-server-side-encryption-customer-key-md5': 'client-md5',
+			},
+			body: 'test content',
+		});
+
+		const ctx = createExecutionContext();
+		const response = await worker.fetch(signedRequest, testEnvWithUniqueEndpoint, ctx);
+		await waitOnExecutionContext(ctx);
+
+		fetchMock.deactivate();
+
+		expect(response.status).toBe(200);
+
+		// Verify CLIENT's SSE headers were sent (not the managed key)
+		const capturedHeaders = s3Mock.getLastRequestHeaders('/bucket/encrypted/file.txt');
+		expect(capturedHeaders).toBeDefined();
+		expect(capturedHeaders!['x-amz-server-side-encryption-customer-key']).toBe(clientKey);
+		expect(capturedHeaders!['x-amz-server-side-encryption-customer-key-md5']).toBe('client-md5');
+	});
+});

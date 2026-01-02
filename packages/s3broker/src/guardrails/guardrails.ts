@@ -1,9 +1,10 @@
 import { AwsClient } from 'aws4fetch';
-import { GuardrailConfig, GuardrailPolicy, GuardrailViolation, UpstreamError } from './type';
+import { GuardrailConfig, GuardrailPolicy, GuardrailViolation, HeaderModifier, UpstreamError } from './type';
 import { NoDeleteOldPolicy } from './no-delete-old';
 import { NoReplaceOldPolicy } from './no-replace-old';
 import { getObjectMetadata } from './s3_helper';
 import { cached } from '../utils';
+import { ManagedSseModifier } from '../sse/sse';
 
 /**
  * Evaluate guardrails for a given request
@@ -137,4 +138,24 @@ export function getPolicies(
 	}
 
 	return policies;
+}
+
+/**
+ * Get all applicable header modifiers for a given path
+ */
+export function getHeaderModifiers(config: GuardrailConfig, path: string): HeaderModifier[] {
+	const modifiers: HeaderModifier[] = [];
+
+	// Check managedSse policies - first matching pattern wins
+	for (const entry of config.managedSse ?? []) {
+		const regex = createFullMatchRegex(entry.pattern);
+		if (regex.test(path)) {
+			if (entry.config !== null) {
+				modifiers.push(new ManagedSseModifier(entry.config));
+			}
+			break; // First match wins
+		}
+	}
+
+	return modifiers;
 }

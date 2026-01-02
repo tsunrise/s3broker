@@ -147,9 +147,22 @@ export class S3Mock {
 				path: /.*/,
 				method: 'PUT',
 			})
-			.reply(() => {
+			.reply((req) => {
+				const url = new URL(req.path, self.endpoint);
+				// Capture the request headers for testing
+				self.lastRequestHeaders.set(url.pathname, req.headers as Record<string, string>);
 				return { statusCode: 200 };
 			})
 			.persist();
 	}
+
+	/**
+	 * Get the last request headers sent to a path (for testing SSE headers)
+	 */
+	public getLastRequestHeaders(path: string): Record<string, string> | undefined {
+		return this.lastRequestHeaders.get(path);
+	}
+
+	// Store request headers from last request to each path (for verification)
+	private lastRequestHeaders: Map<string, Record<string, string>> = new Map();
 }

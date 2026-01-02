@@ -17,7 +17,7 @@
 import { AwsClient } from 'aws4fetch';
 import { verifySignature } from './sigv4';
 import { textErrorResponse, ErrorCode } from './utils';
-import { evaluateGuardrails } from './guardrails/guardrails';
+import { evaluateGuardrails, getHeaderModifiers } from './guardrails/guardrails';
 import type { S3BrokerOptions } from './types';
 import { GuardrailConfig } from './guardrails/type';
 
@@ -162,6 +162,10 @@ export async function handle(request: Request<unknown, IncomingRequestCfProperti
 		);
 	}
 
+	// Get header modifiers for this path (e.g., managed SSE)
+	const guardrailConfig = options.guardrailConfig || defaultGuardrailConfig;
+	const headerModifiers = getHeaderModifiers(guardrailConfig, url.pathname);
+
 	// Build upstream URL, stripping presigned parameters
 	const upstreamUrl = new URL(url.pathname, options.s3Endpoint);
 	for (const [key, value] of url.searchParams.entries()) {
@@ -170,8 +174,8 @@ export async function handle(request: Request<unknown, IncomingRequestCfProperti
 		}
 	}
 
-	// Build upstream headers (allowlist approach)
-	const upstreamHeaders = new Headers();
+	// Build base upstream headers (allowlist approach)
+	let upstreamHeaders = new Headers();
 	for (const [key, value] of request.headers.entries()) {
 		if (HEADERS_TO_INCLUDE.has(key.toLowerCase())) {
 			upstreamHeaders.set(key, value);
@@ -179,14 +183,10 @@ export async function handle(request: Request<unknown, IncomingRequestCfProperti
 	}
 	upstreamHeaders.set('x-amz-content-sha256', 'UNSIGNED-PAYLOAD');
 
-	// Create upstream request
-	const upstreamRequest = new Request(upstreamUrl.toString(), {
-		method: request.method,
-		headers: upstreamHeaders,
-		body: request.body,
-		// @ts-ignore - duplex is needed for streaming bodies
-		duplex: 'half',
-	});
+	// Apply header modifiers (e.g., inject managed SSE headers)
+	for (const modifier of headerModifiers) {
+		upstreamHeaders = await modifier.modifyHeaders(request, upstreamHeaders);
+	}
 
 	// Sign and send to upstream
 	const proxyUpstreamAws = new AwsClient({
@@ -195,8 +195,36 @@ export async function handle(request: Request<unknown, IncomingRequestCfProperti
 		retries: 0,
 	});
 
+	// Helper to send request to upstream
+	const sendToUpstream = async (headers: Headers, body: ReadableStream<Uint8Array> | null): Promise<Response> => {
+		const upstreamRequest = new Request(upstreamUrl.toString(), {
+			method: request.method,
+			headers,
+			body,
+			// @ts-ignore - duplex is needed for streaming bodies
+			duplex: 'half',
+		});
+		return proxyUpstreamAws.fetch(upstreamRequest);
+	};
+
 	try {
-		return await proxyUpstreamAws.fetch(upstreamRequest);
+		// Send initial request
+		let response = await sendToUpstream(upstreamHeaders, request.body);
+
+		// Handle response with modifiers (for GET fallback on unencrypted files)
+		for (const modifier of headerModifiers) {
+			if (modifier.handleResponse) {
+				const result = modifier.handleResponse(response, upstreamHeaders);
+				if ('retryRequest' in result) {
+					// Retry with modified headers (no body for GET/HEAD retry)
+					response = await sendToUpstream(result.retryRequest, null);
+				} else {
+					response = result.modifiedResponse;
+				}
+			}
+		}
+
+		return response;
 	} catch (error) {
 		console.error('Upstream request failed:', error);
 		return textErrorResponse(

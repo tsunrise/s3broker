@@ -73,4 +73,11 @@ export interface Env {
 	 * Set in wrangler.toml under [vars] or via secret
 	 */
 	GUARDRAIL_POLICY?: string;
+
+	/**
+	 * SSE Key for managed SSE-C encryption
+	 *
+	 * Set via: wrangler secret put SSE_KEY
+	 */
+	SSE_KEY?: string;
 }
