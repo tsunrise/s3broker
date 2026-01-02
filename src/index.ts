@@ -8,7 +8,6 @@
 
 import { GuardrailConfig, GuardrailConfigZod, handle } from 's3broker';
 import type { Env } from './env';
-import jsonGuardrailConfig from '../guardrail_policy.json';
 
 export default {
 	async fetch(request, env, _ctx): Promise<Response> {
@@ -32,7 +31,37 @@ export default {
 				return new Response('Server configuration error: invalid GUARDRAIL_POLICY JSON from env', { status: 500 });
 			}
 		} else {
-			guardrailConfig = jsonGuardrailConfig;
+			guardrailConfig = {
+				noDeleteOld: [
+					{
+						pattern: '/\\w*/free/.*',
+						config: null,
+					},
+					{
+						pattern: '/.*',
+						config: { noDeleteBeforeSeconds: 60 },
+					},
+				],
+				noReplaceOld: [
+					{
+						pattern: '/\\w*/free/.*',
+						config: null,
+					},
+					{
+						pattern: '/.*',
+						config: { noReplaceBeforeSeconds: 60 },
+					},
+				],
+				// Only add managedSse if SSE_KEY is provided
+				...(env.SSE_KEY && {
+					managedSse: [
+						{
+							pattern: '/\\w*/encrypted/.*',
+							config: { key: env.SSE_KEY },
+						},
+					],
+				}),
+			};
 		}
 
 		// Delegate to S3Broker library

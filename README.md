@@ -118,6 +118,23 @@ Prevents deletion of objects unless they were created recently (within `noDelete
 
 Prevents replacement of objects unless they were created recently (within `noReplaceBeforeSeconds`).
 
+#### `managedSse`
+
+Automatically injects SSE-C (Server-Side Encryption with Customer-Provided Keys) headers for PUT/GET/HEAD requests. This enables seamless encryption without requiring clients to manage encryption keys.
+
+- If the client provides their own SSE headers, those are passed through (not overwritten)
+- For GET requests to unencrypted legacy files, the proxy will automatically retry without SSE headers
+- Configuration requires a base64-encoded 256-bit (32-byte) AES key
+
+```typescript
+managedSse: [
+  {
+    pattern: '/bucket/encrypted/.*',
+    config: { key: 'base64-encoded-32-byte-key' },
+  },
+],
+```
+
 ## Limitations
 
 - **`STREAMING-AWS4-HMAC-SHA256-PAYLOAD`** payload signing method is not supported. Use unsigned payloads or standard SHA256 signing instead.
