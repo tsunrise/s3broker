@@ -1,10 +1,10 @@
 import { AwsClient } from 'aws4fetch';
-import { GuardrailConfig, GuardrailPolicy, GuardrailViolation, HeaderModifier, UpstreamError } from './type';
+import { GuardrailConfig, GuardrailPolicy, GuardrailViolation, HeaderModifier, ManagedSseConfig, UpstreamError } from './type';
 import { NoDeleteOldPolicy } from './no-delete-old';
 import { NoReplaceOldPolicy } from './no-replace-old';
 import { getObjectMetadata } from './s3_helper';
 import { cached } from '../utils';
-import { ManagedSseModifier } from '../sse/sse';
+import { ManagedSseModifier, computeKeyMd5 } from '../sse/sse';
 
 /**
  * Evaluate guardrails for a given request
@@ -26,7 +26,12 @@ export async function evaluateGuardrails(
 		return null;
 	}
 
-	const metadata = cached(() => getObjectMetadata(upstreamFetcher, s3Endpoint + path));
+	// Look up SSE config for this path (needed for HEAD request on encrypted objects)
+	const metadata = cached(async () => {
+		const sseConfig = getSseConfigForPath(config, path);
+		const sseHeaders = sseConfig ? { key: sseConfig.key, keyMd5: await computeKeyMd5(sseConfig.key) } : undefined;
+		return getObjectMetadata(upstreamFetcher, s3Endpoint + path, sseHeaders);
+	});
 
 	// Create evaluation promises that include policy name
 	const evalPromises = policies.map(({ name: policyName, policy }) => ({
@@ -158,4 +163,17 @@ export function getHeaderModifiers(config: GuardrailConfig, path: string): Heade
 	}
 
 	return modifiers;
+}
+
+/**
+ * Get the SSE config for a path, if any pattern matches
+ */
+function getSseConfigForPath(config: GuardrailConfig, path: string): ManagedSseConfig | null {
+	for (const entry of config.managedSse ?? []) {
+		const regex = createFullMatchRegex(entry.pattern);
+		if (regex.test(path)) {
+			return entry.config;
+		}
+	}
+	return null;
 }

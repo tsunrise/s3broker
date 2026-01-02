@@ -112,6 +112,8 @@ export class S3Mock {
 			})
 			.reply((req) => {
 				const url = new URL(req.path, self.endpoint);
+				// Capture HEAD request headers for testing SSE
+				self.lastHeadRequestHeaders.set(url.pathname, req.headers as Record<string, string>);
 				const obj = self.objects.get(url.pathname);
 				if (!obj) {
 					return { statusCode: 404 };
@@ -157,12 +159,20 @@ export class S3Mock {
 	}
 
 	/**
-	 * Get the last request headers sent to a path (for testing SSE headers)
+	 * Get the last PUT request headers sent to a path (for testing SSE headers)
 	 */
 	public getLastRequestHeaders(path: string): Record<string, string> | undefined {
 		return this.lastRequestHeaders.get(path);
 	}
 
+	/**
+	 * Get the last HEAD request headers sent to a path (for testing SSE headers in guardrails)
+	 */
+	public getLastHeadRequestHeaders(path: string): Record<string, string> | undefined {
+		return this.lastHeadRequestHeaders.get(path);
+	}
+
 	// Store request headers from last request to each path (for verification)
 	private lastRequestHeaders: Map<string, Record<string, string>> = new Map();
+	private lastHeadRequestHeaders: Map<string, Record<string, string>> = new Map();
 }

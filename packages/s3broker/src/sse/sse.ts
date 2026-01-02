@@ -15,7 +15,7 @@ const SSE_KEY_MD5_HEADER = 'x-amz-server-side-encryption-customer-key-md5';
 /**
  * Compute MD5 hash of a base64-encoded key and return as base64.
  */
-async function computeKeyMd5(base64Key: string): Promise<string> {
+export async function computeKeyMd5(base64Key: string): Promise<string> {
 	// Decode base64 key to bytes
 	const keyBytes = Uint8Array.from(atob(base64Key), (c) => c.charCodeAt(0));
 
