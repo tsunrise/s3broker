@@ -967,4 +967,59 @@ describe('Managed SSE', () => {
 		expect(capturedHeaders!['x-amz-server-side-encryption-customer-key']).toBe(clientKey);
 		expect(capturedHeaders!['x-amz-server-side-encryption-customer-key-md5']).toBe('client-md5');
 	});
+
+	it('guardrails work on encrypted paths (SSE headers in HEAD request)', async () => {
+		const { fetchMock } = await import('cloudflare:test');
+		const { S3Mock } = await import('./s3mock');
+
+		// Setup: object created 2 minutes ago (older than threshold)
+		const oldObjectCreationTime = Date.now() - 120_000;
+		const now = Date.now();
+		const currentDate = new Date(now).toISOString().slice(0, 10).replace(/-/g, '');
+		const currentAmzDate = new Date(now).toISOString().replace(/[-:]/g, '').slice(0, 15) + '00Z';
+
+		const uniqueEndpoint = 'https://test-sse4.r2.cloudflarestorage.com';
+		// Config with both noReplaceOld guardrail and SSE
+		const testEnvWithGuardrails: Env = {
+			CLIENT_ACCESS_KEY_ID: 'AKIAIOSFODNN7EXAMPLE',
+			CLIENT_SECRET_ACCESS_KEY: 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY',
+			UPSTREAM_ACCESS_KEY_ID: 'AKIOUPSTREAM12345678',
+			UPSTREAM_SECRET_ACCESS_KEY: 'upstreamSecretKey1234567890abcdefghijklmn',
+			S3_ENDPOINT: uniqueEndpoint,
+			GUARDRAIL_POLICY: JSON.stringify({
+				noReplaceOld: [{ pattern: '/bucket/encrypted/.*', config: { noReplaceBeforeSeconds: 60 } }],
+				managedSse: [{ pattern: '/bucket/encrypted/.*', config: { key: testKey } }],
+			}),
+		};
+
+		const s3Mock = new S3Mock(uniqueEndpoint);
+		// Pre-populate with an old encrypted object
+		s3Mock.putObject('/bucket/encrypted/old-file.txt', 'old content', new Headers(), {
+			currentTimestampMs: oldObjectCreationTime,
+		});
+
+		fetchMock.activate();
+		s3Mock.attachToMock(fetchMock);
+
+		// Try to replace the old encrypted object
+		const signedRequest = await createSignedPutRequest('/bucket/encrypted/old-file.txt', currentDate, currentAmzDate);
+
+		const ctx = createExecutionContext();
+		const response = await worker.fetch(signedRequest, testEnvWithGuardrails, ctx);
+		await waitOnExecutionContext(ctx);
+
+		fetchMock.deactivate();
+
+		// Should be blocked by guardrail (403)
+		expect(response.status).toBe(403);
+		const text = await response.text();
+		expect(text).toContain('noReplaceOld');
+
+		// Verify HEAD request included SSE headers (proving it can read encrypted object metadata)
+		const headHeaders = s3Mock.getLastHeadRequestHeaders('/bucket/encrypted/old-file.txt');
+		expect(headHeaders).toBeDefined();
+		expect(headHeaders!['x-amz-server-side-encryption-customer-algorithm']).toBe('AES256');
+		expect(headHeaders!['x-amz-server-side-encryption-customer-key']).toBe(testKey);
+		expect(headHeaders!['x-amz-server-side-encryption-customer-key-md5']).toBeDefined();
+	});
 });
