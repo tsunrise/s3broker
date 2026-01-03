@@ -5,7 +5,7 @@
 
 A Cloudflare Workers library for building S3 proxies with guardrails.
 
-This is a work in progress. More guardrails and features would be added soon.
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/tsunrise/s3broker-template)
 
 ## Overview
 
