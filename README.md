@@ -5,7 +5,7 @@
 
 A Cloudflare Workers library for building S3 proxies with guardrails.
 
-This is a work in progress. More guardrails and features would be added soon.
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/tsunrise/s3broker-template)
 
 ## Overview
 
@@ -23,6 +23,10 @@ S3Broker acts as a protective layer between your clients and the upstream S3 end
 ||Client|| -- Key A --> ||S3Broker|| -- Key B --> ||Upstream||
 ==========              ============             ============
 ```
+
+Example of triggering a guardrail violation using Mountain Duck:
+
+<img src="readme_assets/example_rejecting_request.png" alt="example_rejecting_request" width="300" />
 
 ## Installation
 
