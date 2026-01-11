@@ -118,9 +118,15 @@ Patterns use regex syntax with the following rules:
 
 Prevents deletion of objects unless they were created recently (within `noDeleteBeforeSeconds`).
 
+- Blocks single object DELETE requests for old objects
+- **Completely blocks bulk delete (POST ?delete)** in protected paths (since checking each object's age is not feasible)
+
 #### `noReplaceOld`
 
 Prevents replacement of objects unless they were created recently (within `noReplaceBeforeSeconds`).
+
+- Blocks PUT requests that would replace old objects
+- **Blocks POST uploads** (browser-based form uploads) that would replace old objects
 
 #### `managedSse`
 

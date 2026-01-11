@@ -7,6 +7,25 @@ export const NoDeleteOldPolicyConfig = z.object({
 
 export type NoDeleteOldPolicyConfig = z.infer<typeof NoDeleteOldPolicyConfig>;
 
+/**
+ * Check if request is a deletion operation:
+ * - DELETE method (single object deletion)
+ * - POST with ?delete query param (bulk delete via DeleteObjects API)
+ */
+function isDeletionRequest(request: Request<unknown, IncomingRequestCfProperties>): 'single' | 'bulk' | false {
+	if (request.method === 'DELETE') {
+		return 'single';
+	}
+	// S3 DeleteObjects uses POST with ?delete query parameter
+	if (request.method === 'POST') {
+		const url = new URL(request.url);
+		if (url.searchParams.has('delete')) {
+			return 'bulk';
+		}
+	}
+	return false;
+}
+
 export class NoDeleteOldPolicy implements GuardrailPolicy {
 	private config: NoDeleteOldPolicyConfig;
 	private currentTimestampMs: number;
@@ -20,11 +39,23 @@ export class NoDeleteOldPolicy implements GuardrailPolicy {
 		request: Request<unknown, IncomingRequestCfProperties>,
 		metadata: () => Promise<Headers>,
 	): Promise<GuardrailViolation | null> {
-		// Only applies to DELETE requests
-		if (request.method !== 'DELETE') {
+		const deleteType = isDeletionRequest(request);
+
+		// Not a deletion request
+		if (!deleteType) {
 			return null;
 		}
 
+		// Bulk delete (POST ?delete): Block entirely for protected paths
+		// We cannot efficiently check the age of each object in the bulk request
+		// without parsing the XML body, which would require buffering
+		if (deleteType === 'bulk') {
+			return {
+				violation: `Bulk delete (DeleteObjects) is not allowed in protected paths. Use single object DELETE instead.`,
+			};
+		}
+
+		// Single object DELETE: Check object age
 		try {
 			const headers = await metadata();
 
