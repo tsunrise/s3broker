@@ -350,6 +350,153 @@ describe('Guardrails - NoDeleteOld', () => {
 		// Should be allowed (204 No Content from upstream mock)
 		expect(response.status).toBe(204);
 	});
+
+	it('blocks bulk delete (POST ?delete) in protected paths', async () => {
+		const { fetchMock } = await import('cloudflare:test');
+		const { S3Mock } = await import('./s3mock');
+
+		const now = Date.now();
+		const currentDate = new Date(now).toISOString().slice(0, 10).replace(/-/g, '');
+		const currentAmzDate = new Date(now).toISOString().replace(/[-:]/g, '').slice(0, 15) + '00Z';
+
+		const uniqueEndpoint = 'https://test-bulk-delete.r2.cloudflarestorage.com';
+		const testEnvWithUniqueEndpoint: Env = {
+			...testEnv,
+			S3_ENDPOINT: uniqueEndpoint,
+		};
+
+		const s3Mock = new S3Mock(uniqueEndpoint);
+
+		fetchMock.activate();
+		s3Mock.attachToMock(fetchMock);
+
+		// Create signed POST ?delete request (bulk delete)
+		const { deriveSigningKey, calculateSignature, buildCanonicalRequest, createStringToSign } = await import('s3broker/sigv4');
+		const region = 'us-east-1';
+		const service = 's3';
+		const signedHeaders = ['host', 'x-amz-content-sha256', 'x-amz-date'];
+		const payloadHash = 'UNSIGNED-PAYLOAD';
+		const requestUrl = 'https://example.com/bucket?delete';
+
+		const unsignedRequest = new IncomingRequest(requestUrl, {
+			method: 'POST',
+			headers: {
+				host: 'example.com',
+				'x-amz-content-sha256': payloadHash,
+				'x-amz-date': currentAmzDate,
+			},
+			body: '<Delete><Object><Key>file1.txt</Key></Object></Delete>',
+		});
+
+		const canonicalRequest = await buildCanonicalRequest(unsignedRequest, signedHeaders, payloadHash, false);
+		const credentialScope = `${currentDate}/${region}/${service}/aws4_request`;
+		const stringToSign = await createStringToSign('AWS4-HMAC-SHA256', currentAmzDate, credentialScope, canonicalRequest);
+		const signingKey = await deriveSigningKey(testEnv.CLIENT_SECRET_ACCESS_KEY, currentDate, region, service);
+		const signature = await calculateSignature(signingKey, stringToSign);
+
+		const signedRequest = new IncomingRequest(requestUrl, {
+			method: 'POST',
+			headers: {
+				Authorization: `AWS4-HMAC-SHA256 Credential=${testEnv.CLIENT_ACCESS_KEY_ID}/${currentDate}/${region}/${service}/aws4_request, SignedHeaders=${signedHeaders.join(';')}, Signature=${signature}`,
+				host: 'example.com',
+				'x-amz-content-sha256': payloadHash,
+				'x-amz-date': currentAmzDate,
+			},
+			body: '<Delete><Object><Key>file1.txt</Key></Object></Delete>',
+		});
+
+		const ctx = createExecutionContext();
+		const response = await worker.fetch(signedRequest, testEnvWithUniqueEndpoint, ctx);
+		await waitOnExecutionContext(ctx);
+
+		fetchMock.deactivate();
+
+		// Should be blocked by guardrail (403 Forbidden) - bulk delete not allowed
+		expect(response.status).toBe(403);
+		const text = await response.text();
+		expect(text).toContain('Bulk delete');
+		expect(text).toContain('noDeleteOld');
+	});
+});
+
+describe('Guardrails - NoReplaceOld Bypass Prevention', () => {
+	const testEnv: Env = {
+		CLIENT_ACCESS_KEY_ID: 'AKIAIOSFODNN7EXAMPLE',
+		CLIENT_SECRET_ACCESS_KEY: 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY',
+		UPSTREAM_ACCESS_KEY_ID: 'AKIOUPSTREAM12345678',
+		UPSTREAM_SECRET_ACCESS_KEY: 'upstreamSecretKey1234567890abcdefghijklmn',
+		S3_ENDPOINT: 'https://test-post-upload.r2.cloudflarestorage.com',
+		GUARDRAIL_POLICY: JSON.stringify({
+			noReplaceOld: [{ pattern: '/bucket/.*', config: { noReplaceBeforeSeconds: 60 } }],
+		}),
+	};
+
+	it('blocks POST upload that would replace old object', async () => {
+		const { fetchMock } = await import('cloudflare:test');
+		const { S3Mock } = await import('./s3mock');
+
+		// Setup: object created 2 minutes ago (older than threshold)
+		const oldObjectCreationTime = Date.now() - 120_000;
+		const now = Date.now();
+		const currentDate = new Date(now).toISOString().slice(0, 10).replace(/-/g, '');
+		const currentAmzDate = new Date(now).toISOString().replace(/[-:]/g, '').slice(0, 15) + '00Z';
+
+		const s3Mock = new S3Mock(testEnv.S3_ENDPOINT);
+		s3Mock.putObject('/bucket/old-file.txt', 'old content', new Headers(), {
+			currentTimestampMs: oldObjectCreationTime,
+		});
+
+		fetchMock.activate();
+		s3Mock.attachToMock(fetchMock);
+
+		// Create signed POST request (form upload)
+		const { deriveSigningKey, calculateSignature, buildCanonicalRequest, createStringToSign } = await import('s3broker/sigv4');
+		const region = 'us-east-1';
+		const service = 's3';
+		const signedHeaders = ['host', 'x-amz-content-sha256', 'x-amz-date'];
+		const payloadHash = 'UNSIGNED-PAYLOAD';
+		const requestUrl = 'https://example.com/bucket/old-file.txt';
+
+		const IncomingRequest = Request<unknown, IncomingRequestCfProperties>;
+		const unsignedRequest = new IncomingRequest(requestUrl, {
+			method: 'POST',
+			headers: {
+				host: 'example.com',
+				'x-amz-content-sha256': payloadHash,
+				'x-amz-date': currentAmzDate,
+			},
+			body: 'new file content',
+		});
+
+		const canonicalRequest = await buildCanonicalRequest(unsignedRequest, signedHeaders, payloadHash, false);
+		const credentialScope = `${currentDate}/${region}/${service}/aws4_request`;
+		const stringToSign = await createStringToSign('AWS4-HMAC-SHA256', currentAmzDate, credentialScope, canonicalRequest);
+		const signingKey = await deriveSigningKey(testEnv.CLIENT_SECRET_ACCESS_KEY, currentDate, region, service);
+		const signature = await calculateSignature(signingKey, stringToSign);
+
+		const signedRequest = new IncomingRequest(requestUrl, {
+			method: 'POST',
+			headers: {
+				Authorization: `AWS4-HMAC-SHA256 Credential=${testEnv.CLIENT_ACCESS_KEY_ID}/${currentDate}/${region}/${service}/aws4_request, SignedHeaders=${signedHeaders.join(';')}, Signature=${signature}`,
+				host: 'example.com',
+				'x-amz-content-sha256': payloadHash,
+				'x-amz-date': currentAmzDate,
+			},
+			body: 'new file content',
+		});
+
+		const ctx = createExecutionContext();
+		const response = await worker.fetch(signedRequest, testEnv, ctx);
+		await waitOnExecutionContext(ctx);
+
+		fetchMock.deactivate();
+
+		// Should be blocked by guardrail (403 Forbidden)
+		expect(response.status).toBe(403);
+		const text = await response.text();
+		expect(text).toContain('noReplaceOld');
+		expect(text).toContain('exceeds');
+	});
 });
 
 describe('Guardrails - Exclude Rules (null config)', () => {

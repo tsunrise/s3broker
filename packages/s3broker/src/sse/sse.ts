@@ -48,8 +48,9 @@ export class ManagedSseModifier implements HeaderModifier {
 		}
 
 		// For methods that don't use SSE-C (e.g., DELETE, LIST), skip
+		// Note: POST can be either form upload or other operations
 		const method = request.method.toUpperCase();
-		if (method !== 'GET' && method !== 'HEAD' && method !== 'PUT') {
+		if (method !== 'GET' && method !== 'HEAD' && method !== 'PUT' && method !== 'POST') {
 			return upstreamHeaders;
 		}
 
