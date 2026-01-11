@@ -1,6 +1,6 @@
 {
 	"name": "s3broker",
-	"version": "0.6.2",
+	"version": "0.6.3",
 	"description": "S3 proxy library with SigV4 verification and configurable guardrails policies",
 	"main": "dist/index.js",
 	"module": "dist/index.mjs",
