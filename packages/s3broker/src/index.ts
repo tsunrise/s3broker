@@ -196,15 +196,16 @@ export async function handle(request: Request<unknown, IncomingRequestCfProperti
 	});
 
 	// Helper to send request to upstream
+	// Pass the body via init rather than a Request: aws4fetch drops the body of a Request
+	// that has no Content-Type, which is how clients send UploadPart (multipart upload) requests.
 	const sendToUpstream = async (headers: Headers, body: ReadableStream<Uint8Array> | null): Promise<Response> => {
-		const upstreamRequest = new Request(upstreamUrl.toString(), {
+		return proxyUpstreamAws.fetch(upstreamUrl.toString(), {
 			method: request.method,
 			headers,
 			body,
 			// @ts-ignore - duplex is needed for streaming bodies
 			duplex: 'half',
 		});
-		return proxyUpstreamAws.fetch(upstreamRequest);
 	};
 
 	try {

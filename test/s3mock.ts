@@ -151,8 +151,9 @@ export class S3Mock {
 			})
 			.reply((req) => {
 				const url = new URL(req.path, self.endpoint);
-				// Capture the request headers for testing
+				// Capture the request headers and body for testing
 				self.lastRequestHeaders.set(url.pathname, req.headers as Record<string, string>);
+				self.lastRequestBodies.set(url.pathname, String(req.body ?? ''));
 				return { statusCode: 200 };
 			})
 			.persist();
@@ -166,6 +167,13 @@ export class S3Mock {
 	}
 
 	/**
+	 * Get the last PUT request body sent to a path (for testing body forwarding)
+	 */
+	public getLastRequestBody(path: string): string | undefined {
+		return this.lastRequestBodies.get(path);
+	}
+
+	/**
 	 * Get the last HEAD request headers sent to a path (for testing SSE headers in guardrails)
 	 */
 	public getLastHeadRequestHeaders(path: string): Record<string, string> | undefined {
@@ -174,5 +182,6 @@ export class S3Mock {
 
 	// Store request headers from last request to each path (for verification)
 	private lastRequestHeaders: Map<string, Record<string, string>> = new Map();
+	private lastRequestBodies: Map<string, string> = new Map();
 	private lastHeadRequestHeaders: Map<string, Record<string, string>> = new Map();
 }

@@ -750,7 +750,7 @@ describe('Guardrails - NoReplaceOld', () => {
 		path: string,
 		currentDate: string,
 		currentAmzDate: string,
-		body: string = 'new content',
+		body: string | Uint8Array = 'new content',
 	): Promise<Request<unknown, IncomingRequestCfProperties>> {
 		const { deriveSigningKey, calculateSignature, buildCanonicalRequest, createStringToSign } = await import('s3broker/sigv4');
 
@@ -906,6 +906,44 @@ describe('Guardrails - NoReplaceOld', () => {
 
 		// Should be allowed (200 OK from upstream mock) - creating new objects is always allowed
 		expect(response.status).toBe(200);
+	});
+
+	it('forwards the body of multipart UploadPart requests sent without Content-Type', async () => {
+		const { fetchMock } = await import('cloudflare:test');
+		const { S3Mock } = await import('./s3mock');
+
+		const now = Date.now();
+		const currentDate = new Date(now).toISOString().slice(0, 10).replace(/-/g, '');
+		const currentAmzDate = new Date(now).toISOString().replace(/[-:]/g, '').slice(0, 15) + '00Z';
+
+		const uniqueEndpoint = 'https://test-replace-upload-part.r2.cloudflarestorage.com';
+		const testEnvWithUniqueEndpoint: Env = {
+			...testEnv,
+			S3_ENDPOINT: uniqueEndpoint,
+		};
+
+		const s3Mock = new S3Mock(uniqueEndpoint);
+		fetchMock.activate();
+		s3Mock.attachToMock(fetchMock);
+
+		// A binary body gets no implicit Content-Type, like UploadPart requests from Cyberduck
+		const partBody = new TextEncoder().encode('part content');
+		const signedRequest = await createSignedPutRequest(
+			'/bucket/large-object?partNumber=1&uploadId=abc',
+			currentDate,
+			currentAmzDate,
+			partBody,
+		);
+		expect(signedRequest.headers.has('content-type')).toBe(false);
+
+		const ctx = createExecutionContext();
+		const response = await worker.fetch(signedRequest, testEnvWithUniqueEndpoint, ctx);
+		await waitOnExecutionContext(ctx);
+
+		fetchMock.deactivate();
+
+		expect(response.status).toBe(200);
+		expect(s3Mock.getLastRequestBody('/bucket/large-object')).toBe('part content');
 	});
 });
 
